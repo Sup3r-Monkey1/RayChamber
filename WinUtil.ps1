@@ -6,11 +6,11 @@
     Hardware-aware, tiered Windows optimization with WPF GUI.
     Combines Process Lasso + MSI Afterburner + Chris Titus WinUtil.
 .NOTES
-    Run: irm is.gd/RaysUtil | iex
+    Run: irm https://is.gd/RaysWinUtil | iex
     Or:  powershell -ExecutionPolicy Bypass -File WinUtil.ps1
 #>
 
-# ─── SMART ELEVATION (iex compatible) ───────────────────────────────────────────
+# ─── SMART ELEVATION (Fixed for is.gd/RaysWinUtil) ─────────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "🚀 Ray's Chamber v5.0: Requesting Kernel Access..." -ForegroundColor Cyan
     
@@ -26,6 +26,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     }
     exit
 }
+
 # ─── ASSEMBLIES ─────────────────────────────────────────────────────────────────
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
@@ -721,7 +722,7 @@ function Add-ContextMenu {
     Set-ItemProperty -Path $RegPath -Name "Icon" -Value "powershell.exe"
     Set-ItemProperty -Path $RegPath -Name "Position" -Value "Top"
     New-Item -Path "$RegPath\command" -Force | Out-Null
-    Set-ItemProperty -Path "$RegPath\command" -Name "(Default)" -Value 'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command "irm is.gd/RaysUtil | iex"'
+    Set-ItemProperty -Path "$RegPath\command" -Name "(Default)" -Value 'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command "irm https://is.gd/RaysWinUtil | iex"'
     Write-Log "Context menu shortcut added! Right-click desktop to find it." OK
 }
 
@@ -1134,7 +1135,6 @@ function Revert-AllChanges {
             <RowDefinition Height="160"/>
         </Grid.RowDefinitions>
 
-        <!-- TITLE BAR -->
         <Border Grid.Row="0" Background="$($C.NavBG)" Padding="16,10">
             <DockPanel>
                 <TextBlock DockPanel.Dock="Left" FontSize="16" FontWeight="Bold" Foreground="$($C.Accent)">
@@ -1146,7 +1146,6 @@ function Revert-AllChanges {
             </DockPanel>
         </Border>
 
-        <!-- NAVIGATION -->
         <Border Grid.Row="1" Background="$($C.NavBG)" Padding="8,0,8,0">
             <StackPanel Orientation="Horizontal">
                 <Button x:Name="NavInstall"  Content="📦 Install"  Style="{StaticResource NavBtn}"/>
@@ -1159,11 +1158,9 @@ function Revert-AllChanges {
             </StackPanel>
         </Border>
 
-        <!-- MAIN CONTENT AREA -->
         <Border Grid.Row="2" Background="$($C.Surface)" BorderBrush="$($C.Border)" BorderThickness="0,1" Margin="0">
             <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
                 <Grid>
-                    <!-- INSTALL TAB -->
                     <StackPanel x:Name="PanelInstall" Visibility="Visible">
                         <TextBlock Text="📦 Application Installer (WinGet)" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
                         <TextBlock Text="Select apps and click Install. Powered by winget." Foreground="$($C.TextDim)" Margin="0,0,0,8"/>
@@ -1182,7 +1179,6 @@ function Revert-AllChanges {
                         <WrapPanel x:Name="AppPanel" Orientation="Horizontal"/>
                     </StackPanel>
 
-                    <!-- TWEAKS TAB -->
                     <StackPanel x:Name="PanelTweaks" Visibility="Collapsed">
                         <TextBlock Text="🔧 System Tweaks — Tiered Optimization" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
                         <TextBlock Text="Hardware-aware optimization. Creates restore point before applying." Foreground="$($C.TextDim)" Margin="0,0,0,12"/>
@@ -1221,7 +1217,6 @@ function Revert-AllChanges {
                         </Border>
                     </StackPanel>
 
-                    <!-- GAMING TAB -->
                     <StackPanel x:Name="PanelGaming" Visibility="Collapsed">
                         <TextBlock Text="🎮 Gaming Optimization — Zero Latency" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
                         <TextBlock Text="Process Lasso + MSI Afterburner + ExitLag combined." Foreground="$($C.TextDim)" Margin="0,0,0,12"/>
@@ -1240,7 +1235,6 @@ function Revert-AllChanges {
                         </WrapPanel>
                     </StackPanel>
 
-                    <!-- HARDWARE TAB -->
                     <StackPanel x:Name="PanelHardware" Visibility="Collapsed">
                         <TextBlock Text="🔩 Hardware Info &amp; Deep Tweaks" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
                         <Border Background="$($C.BG)" CornerRadius="6" Padding="12" Margin="0,8,0,12" BorderBrush="$($C.Border)" BorderThickness="1">
@@ -1256,7 +1250,6 @@ function Revert-AllChanges {
                         </WrapPanel>
                     </StackPanel>
 
-                    <!-- CONFIG TAB -->
                     <StackPanel x:Name="PanelConfig" Visibility="Collapsed">
                         <TextBlock Text="⚙ Configuration &amp; Features" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
                         <TextBlock Text="Windows Optional Features and ISO tools." Foreground="$($C.TextDim)" Margin="0,0,0,12"/>
@@ -1280,7 +1273,6 @@ function Revert-AllChanges {
                         <Button x:Name="BtnMicroWin" Content="💿 MicroWin ISO Debloater" Style="{StaticResource AccentBtn}" HorizontalAlignment="Left" ToolTip="Select a Windows ISO file and strip bloatware from it using DISM. Creates a clean install image."/>
                     </StackPanel>
 
-                    <!-- UPDATES TAB -->
                     <StackPanel x:Name="PanelUpdates" Visibility="Collapsed">
                         <TextBlock Text="🔄 Windows Update Control" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,12"/>
                         <WrapPanel>
@@ -1290,7 +1282,6 @@ function Revert-AllChanges {
                         </WrapPanel>
                     </StackPanel>
 
-                    <!-- HEALTH TAB -->
                     <StackPanel x:Name="PanelHealth" Visibility="Collapsed">
                         <TextBlock Text="🩺 System Health &amp; Diagnostics" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
                         <TextBlock Text="Self-healing tools to fix corrupted files and stuck updates." Foreground="$($C.TextDim)" Margin="0,0,0,12"/>
@@ -1306,7 +1297,6 @@ function Revert-AllChanges {
             </ScrollViewer>
         </Border>
 
-        <!-- LOG WINDOW -->
         <Border Grid.Row="3" Background="$($C.LogBG)" BorderBrush="$($C.Border)" BorderThickness="0,1,0,0">
             <DockPanel>
                 <Border DockPanel.Dock="Top" Background="$($C.NavBG)" Padding="12,6">
@@ -1321,14 +1311,15 @@ function Revert-AllChanges {
 </Window>
 "@
 
-# ─── BUILD WINDOW ────────────────────────────────────────────────────────────────
+# ─── BUILD WINDOW (FIXED PARSING BLOCK) ──────────────────────────────────────────
 $Reader = New-Object System.Xml.XmlNodeReader $XAML
 $Window = [Windows.Markup.XamlReader]::Load($Reader)
 
 $Ctrl = @{}
-$XAML.SelectNodes("//*[@*[contains(translate(name(),'X','x'),'name')]]") | ForEach-Object {
-    $name = $_.Name
-    if (-not $name) { $name = $_.'x:Name' }
+# Uses XPath to safely grab both Name and x:Name regardless of namespace configurations
+$XAML.SelectNodes("//*[@*[local-name()='Name']]") | ForEach-Object {
+    $name = $_.GetAttribute("Name")
+    if (-not $name) { $name = $_.GetAttribute("x:Name") }
     if ($name) { $Ctrl[$name] = $Window.FindName($name) }
 }
 
@@ -1371,9 +1362,11 @@ $NavBtns = @('NavInstall','NavTweaks','NavGaming','NavHardware','NavConfig','Nav
 function Switch-Tab {
     param([int]$Index)
     for ($i = 0; $i -lt $Panels.Count; $i++) {
-        $Ctrl[$Panels[$i]].Visibility = if ($i -eq $Index) { 'Visible' } else { 'Collapsed' }
-        $Ctrl[$NavBtns[$i]].Background = if ($i -eq $Index) { $C.Surface } else { 'Transparent' }
-        $Ctrl[$NavBtns[$i]].Foreground = if ($i -eq $Index) { $C.Accent } else { $C.TextDim }
+        if ($Ctrl[$Panels[$i]]) { $Ctrl[$Panels[$i]].Visibility = if ($i -eq $Index) { 'Visible' } else { 'Collapsed' } }
+        if ($Ctrl[$NavBtns[$i]]) { 
+            $Ctrl[$NavBtns[$i]].Background = if ($i -eq $Index) { $C.Surface } else { 'Transparent' }
+            $Ctrl[$NavBtns[$i]].Foreground = if ($i -eq $Index) { $C.Accent } else { $C.TextDim }
+        }
     }
 }
 
