@@ -1,28 +1,27 @@
 #Requires -RunAsAdministrator
-<#
-.SYNOPSIS
-    Ray's Optimization Chamber v5.0 — Ultimate Windows Utility
-.DESCRIPTION
-    Hardware-aware, tiered Windows optimization with WPF GUI.
-    Combines Process Lasso + MSI Afterburner + Chris Titus WinUtil.
-.NOTES
-    Run: irm is.gd/RaysUtil | iex
-    Or:  powershell -ExecutionPolicy Bypass -File WinUtil.ps1
-#>
 
-# ─── SMART ELEVATION (Universal Compatibility Fix) ───────────────────────────
+# ─── SMART ELEVATION (Fixed for Windows PowerShell 5.1) ────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Elevating Ray's Chamber to Admin..." -ForegroundColor Cyan
+    
     if ($PSCommandPath) {
+        # Running from a local file
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     } else {
-        # Fallback for IEX (Null-Coalescing alternative for PS 5.1)
-        $remoteScript = Invoke-RestMethod "https://raw.githubusercontent.com/raysutil/main/WinUtil.ps1" -ErrorAction SilentlyContinue
-        if ($null -eq $remoteScript) {
-            $remoteScript = $MyInvocation.MyCommand.ScriptBlock.ToString()
+        # Running via 'irm | iex' (downloaded from GitHub)
+        $url = "https://raw.githubusercontent.com/raysutil/main/WinUtil.ps1"
+        $scriptContent = (Invoke-RestMethod -Uri $url -ErrorAction SilentlyContinue)
+        
+        # Compatibility check: if IRM fails or isn't needed, use the current scriptblock string
+        if ($null -eq $scriptContent) {
+            $scriptContent = $MyInvocation.MyCommand.ScriptBlock.ToString()
         }
-        $scriptBlock = [ScriptBlock]::Create($remoteScript)
+        
+        $scriptBlock = [ScriptBlock]::Create($scriptContent)
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$scriptBlock`"" -Verb RunAs
+    }
+    exit
+}
     }
     exit
 }
