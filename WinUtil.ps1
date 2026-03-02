@@ -10,17 +10,22 @@
     Or:  powershell -ExecutionPolicy Bypass -File WinUtil.ps1
 #>
 
-# ─── SMART ELEVATION (Fixed for PS 5.1 & iex Compatibility) ─────────────────────
+# ─── SMART ELEVATION (Universal Compatibility Fix) ───────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Elevating Ray's Chamber to Admin..." -ForegroundColor Cyan
     if ($PSCommandPath) {
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     } else {
-        # Fallback for IEX: Re-download the script to run as admin
-        $url = "https://raw.githubusercontent.com/raysutil/main/WinUtil.ps1"
-        $script = (Invoke-RestMethod $url -ErrorAction SilentlyContinue)
-        if ($null -eq $script) { $script = $MyInvocation.MyCommand.ScriptBlock.ToString() }
-        
+        # Fallback for IEX (Null-Coalescing alternative for PS 5.1)
+        $remoteScript = Invoke-RestMethod "https://raw.githubusercontent.com/raysutil/main/WinUtil.ps1" -ErrorAction SilentlyContinue
+        if ($null -eq $remoteScript) {
+            $remoteScript = $MyInvocation.MyCommand.ScriptBlock.ToString()
+        }
+        $scriptBlock = [ScriptBlock]::Create($remoteScript)
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$scriptBlock`"" -Verb RunAs
+    }
+    exit
+}
         $encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand" -Verb RunAs
     }
