@@ -1,28 +1,27 @@
 #Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Ray's Optimization Chamber v5.0 — Ultimate Windows Utility
+.DESCRIPTION
+    Hardware-aware, tiered Windows optimization with WPF GUI.
+    Combines Process Lasso + MSI Afterburner + Chris Titus WinUtil.
+.NOTES
+    Run: irm is.gd/RaysUtil | iex
+    Or:  powershell -ExecutionPolicy Bypass -File WinUtil.ps1
+#>
 
-# ─── SMART ELEVATION (Final Universal Fix) ──────────────────────────────────
+# ─── SMART ELEVATION (iex compatible) ───────────────────────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Elevating Ray's Chamber to Admin..." -ForegroundColor Cyan
-    
     if ($PSCommandPath) {
-        # Running from a local file
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     } else {
-        # Running via 'irm | iex' (downloaded from GitHub)
-        $url = "https://raw.githubusercontent.com/raysutil/main/WinUtil.ps1"
-        $scriptContent = (Invoke-RestMethod -Uri $url -ErrorAction SilentlyContinue)
-        
-        if ($null -eq $scriptContent) {
-            $scriptContent = $MyInvocation.MyCommand.ScriptBlock.ToString()
-        }
-        
-        # Use Base64 to prevent special character/bracket corruption during elevation
-        $bytes = [System.Text.Encoding]::Unicode.GetBytes($scriptContent)
-        $encoded = [Convert]::ToBase64String($bytes)
-        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" -Verb RunAs
+        $scriptBlock = [ScriptBlock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/raysutil/main/WinUtil.ps1" -ErrorAction SilentlyContinue) ?? $MyInvocation.MyCommand.ScriptBlock.ToString())
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$scriptBlock`"" -Verb RunAs
     }
     exit
 }
+
 # ─── ASSEMBLIES ─────────────────────────────────────────────────────────────────
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
