@@ -12,16 +12,20 @@
 
 # ─── SMART ELEVATION (iex compatible) ───────────────────────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "Elevating Ray's Chamber to Admin..." -ForegroundColor Cyan
+    Write-Host "🚀 Ray's Chamber v5.0: Requesting Kernel Access..." -ForegroundColor Cyan
+    
+    $ShortLink = "https://is.gd/RaysWinUtil"
+    
     if ($PSCommandPath) {
+        # If running from a local file
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     } else {
-        $scriptBlock = [ScriptBlock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/raysutil/main/WinUtil.ps1" -ErrorAction SilentlyContinue) ?? $MyInvocation.MyCommand.ScriptBlock.ToString())
-        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$scriptBlock`"" -Verb RunAs
+        # If running via 'irm https://is.gd/RaysWinUtil | iex'
+        # We re-trigger the download command as Admin
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"iex (Invoke-RestMethod '$ShortLink')`"" -Verb RunAs
     }
     exit
 }
-
 # ─── ASSEMBLIES ─────────────────────────────────────────────────────────────────
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
