@@ -1,6 +1,6 @@
 #Requires -RunAsAdministrator
 
-# ─── SMART ELEVATION (Fixed for Windows PowerShell 5.1) ────────────────────────
+# ─── SMART ELEVATION (Final Universal Fix) ──────────────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Elevating Ray's Chamber to Admin..." -ForegroundColor Cyan
     
@@ -12,25 +12,17 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
         $url = "https://raw.githubusercontent.com/raysutil/main/WinUtil.ps1"
         $scriptContent = (Invoke-RestMethod -Uri $url -ErrorAction SilentlyContinue)
         
-        # Compatibility check: if IRM fails or isn't needed, use the current scriptblock string
         if ($null -eq $scriptContent) {
             $scriptContent = $MyInvocation.MyCommand.ScriptBlock.ToString()
         }
         
-        $scriptBlock = [ScriptBlock]::Create($scriptContent)
-        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$scriptBlock`"" -Verb RunAs
+        # Use Base64 to prevent special character/bracket corruption during elevation
+        $bytes = [System.Text.Encoding]::Unicode.GetBytes($scriptContent)
+        $encoded = [Convert]::ToBase64String($bytes)
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" -Verb RunAs
     }
     exit
 }
-    }
-    exit
-}
-        $encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
-        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand" -Verb RunAs
-    }
-    exit
-}
-
 # ─── ASSEMBLIES ─────────────────────────────────────────────────────────────────
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
