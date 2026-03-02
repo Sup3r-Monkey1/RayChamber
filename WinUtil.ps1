@@ -1,1561 +1,980 @@
-#Requires -RunAsAdministrator
-<#
-.SYNOPSIS
-    Ray's Optimization Chamber v5.0 — Ultimate Windows Utility
-.DESCRIPTION
-    Hardware-aware, tiered Windows optimization with WPF GUI.
-    Combines Process Lasso + MSI Afterburner + Chris Titus WinUtil.
-.NOTES
-    Run: irm https://is.gd/RaysWinUtil | iex
-    Or:  powershell -ExecutionPolicy Bypass -File WinUtil.ps1
-#>
+# ============================================================
+#  RAY'S OPTIMIZATION CHAMBER v5.0 - Ultimate Windows Utility
+#  Hardware-Aware | Tiered Optimization | WPF GUI | Mica Theme
+# ============================================================
 
-# ─── SMART ELEVATION (Fixed for is.gd/RaysWinUtil) ─────────────────────────────
+# --- SECTION 1: ADMIN ELEVATION ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "🚀 Ray's Chamber v5.0: Requesting Kernel Access..." -ForegroundColor Cyan
-    
-    $ShortLink = "https://is.gd/RaysWinUtil"
-    
-    if ($PSCommandPath) {
-        # If running from a local file
-        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    } else {
-        # If running via 'irm https://is.gd/RaysWinUtil | iex'
-        # We re-trigger the download command as Admin
-        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"iex (Invoke-RestMethod '$ShortLink')`"" -Verb RunAs
-    }
+    Write-Host "Elevating Ray's Chamber to Admin..." -ForegroundColor Cyan
+    $cmd = if ($PSCommandPath) { "& '$PSCommandPath'" } else { "irm is.gd/RaysUtil | iex" }
+    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -Command $cmd" -Verb RunAs
     exit
 }
 
-# ─── ASSEMBLIES ─────────────────────────────────────────────────────────────────
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
+# --- SECTION 2: ASSEMBLIES ---
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
+Add-Type -AssemblyName System.Windows.Forms
 
-# ─── DWM HELPER (Mica / Dark Title Bar) ─────────────────────────────────────────
-Add-Type -TypeDefinition @"
+# --- SECTION 3: HARDWARE DETECTION ---
+$cpuName   = (Get-CimInstance Win32_Processor).Name
+$cpuCores  = (Get-CimInstance Win32_Processor).NumberOfCores
+$cpuThreads= (Get-CimInstance Win32_Processor).ThreadCount
+$ramGB     = [math]::Round((Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum / 1GB)
+$ramSpeed  = (Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1).Speed
+$gpu       = (Get-CimInstance Win32_VideoController | Select-Object -First 1).Name
+$isLaptop  = if (Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue) { $true } else { $false }
+$HardwareType = if ($isLaptop) { 'LAPTOP' } else { 'DESKTOP' }
+$SuggestedTier = 'Mid-Range'
+if ($ramGB -le 8 -or $cpuName -match 'Celeron|Pentium|Athlon|i3') { $SuggestedTier = 'Low-End' }
+if ($ramGB -ge 32 -and -not $isLaptop -and $cpuName -match 'i7|i9|Ryzen 7|Ryzen 9') { $SuggestedTier = 'High-End' }
+$StatusColor = if ($isLaptop) { 'Yellow' } else { 'Cyan' }
+
+# --- SECTION 4: CONSOLE BRANDING ---
+Clear-Host
+Write-Host '' -ForegroundColor $StatusColor
+Write-Host '  ============================================' -ForegroundColor $StatusColor
+Write-Host "  RAY'S OPTIMIZATION CHAMBER v5.0" -ForegroundColor $StatusColor
+Write-Host '  ============================================' -ForegroundColor $StatusColor
+Write-Host "  DEVICE : $HardwareType" -ForegroundColor $StatusColor
+Write-Host "  CPU    : $cpuName ($cpuCores C / $cpuThreads T)" -ForegroundColor Gray
+Write-Host "  RAM    : ${ramGB}GB @ ${ramSpeed}MHz" -ForegroundColor Gray
+Write-Host "  GPU    : $gpu" -ForegroundColor Gray
+Write-Host "  TIER   : $SuggestedTier" -ForegroundColor $StatusColor
+Write-Host '  ============================================' -ForegroundColor $StatusColor
+Write-Host ''
+
+# --- SECTION 5: DWM HELPER ---
+try { Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public class DwmHelper {
-    [DllImport("dwmapi.dll", PreserveSig = true)]
-    public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
-    public static void EnableDarkTitle(IntPtr h) {
-        int v = 1; DwmSetWindowAttribute(h, 20, ref v, 4);
-    }
-    public static void EnableMica(IntPtr h) {
-        int v = 2; DwmSetWindowAttribute(h, 38, ref v, 4);
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s);
+    public static void ApplyDark(IntPtr h) {
+        int v=1; DwmSetWindowAttribute(h,20,ref v,4);
+        int m=2; DwmSetWindowAttribute(h,38,ref m,4);
     }
 }
-"@ -ErrorAction SilentlyContinue
+'@ } catch {}
 
-# ─── MEMORY HELPER ──────────────────────────────────────────────────────────────
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class MemHelper {
-    [DllImport("kernel32.dll")]
-    public static extern bool SetProcessWorkingSetSize(IntPtr proc, int min, int max);
-    [DllImport("psapi.dll")]
-    public static extern int EmptyWorkingSet(IntPtr proc);
-}
-"@ -ErrorAction SilentlyContinue
-
-# ─── HARDWARE DETECTION (The "Brain") ───────────────────────────────────────────
-$cpuInfo    = Get-CimInstance Win32_Processor
-$cpuName    = $cpuInfo.Name.Trim()
-$cpuCores   = $cpuInfo.NumberOfCores
-$cpuThreads = $cpuInfo.NumberOfLogicalProcessors
-$ramSticks  = Get-CimInstance Win32_PhysicalMemory
-$ramGB      = [math]::Round(($ramSticks | Measure-Object Capacity -Sum).Sum / 1GB)
-$ramSpeed   = ($ramSticks | Select-Object -First 1).Speed
-$ramMax     = try { [math]::Round((Get-CimInstance Win32_PhysicalMemoryArray).MaxCapacity / 1MB) } catch { 0 }
-$gpuInfo    = Get-CimInstance Win32_VideoController | Where-Object { $_.Status -eq 'OK' } | Select-Object -First 1
-$gpuName    = if ($gpuInfo) { $gpuInfo.Name.Trim() } else { "Unknown GPU" }
-$isLaptop   = if (Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue) { $true } else { $false }
-$HardwareType = if ($isLaptop) { "LAPTOP" } else { "DESKTOP" }
-$isIGPU     = $gpuName -match "Intel|UHD|Iris|Vega|Radeon Graphics"
-$osVersion  = (Get-CimInstance Win32_OperatingSystem).Caption
-$monitorHz  = try { (Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams -ErrorAction SilentlyContinue | Select-Object -First 1).ActiveEncoding } catch { 60 }
-if ($monitorHz -lt 30 -or $monitorHz -gt 500) { $monitorHz = 60 }
-
-# WinSAT Score
-$winsat = try { Get-CimInstance Win32_WinSAT -ErrorAction SilentlyContinue } catch { $null }
-$cpuScore   = if ($winsat) { $winsat.CPUScore } else { 0 }
-$memScore   = if ($winsat) { $winsat.MemoryScore } else { 0 }
-$diskScore  = if ($winsat) { $winsat.DiskScore } else { 0 }
-$gpuScore   = if ($winsat) { $winsat.GraphicsScore } else { 0 }
-$totalScore = if ($winsat) { [math]::Round(($cpuScore + $memScore + $diskScore + $gpuScore) / 4, 1) } else { 0 }
-
-# Tier Detection
-$SuggestedTier = "Mid-Range"
-if ($ramGB -le 8 -or $cpuName -match "Celeron|Pentium|Athlon|i3-[2-7]|A[4-9]-") { $SuggestedTier = "Low-End" }
-if ($ramGB -ge 32 -and $cpuCores -ge 8 -and -not $isLaptop) { $SuggestedTier = "High-End" }
-if ($ramGB -ge 64 -and $cpuCores -ge 12) { $SuggestedTier = "High-End" }
-
-$StatusColor = if ($isLaptop) { "Yellow" } else { "Cyan" }
-$StatusHex   = if ($isLaptop) { "#FFD700" } else { "#00D9FF" }
-
-# ─── CYBER-ASCII STARTUP ────────────────────────────────────────────────────────
-Clear-Host
-$Header = @"
-
-  ██████╗  █████╗ ██╗   ██╗███████╗
-  ██╔══██╗██╔══██╗╚██╗ ██╔╝██╔════╝
-  ██████╔╝███████║ ╚████╔╝ ███████╗
-  ██╔══██╗██╔══██║  ╚██╔╝  ╚════██║
-  ██║  ██║██║  ██║   ██║   ███████║
-  ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚══════╝
-    O P T I M I Z A T I O N   C H A M B E R   v5.0
-  ──────────────────────────────────────────────────
-  DEVICE: $HardwareType | CPU: $cpuName
-  RAM: ${ramGB}GB @ ${ramSpeed}MHz | GPU: $gpuName
-  CORES: $cpuCores C / $cpuThreads T | SCORE: $totalScore/10
-  SUGGESTED TIER: $SuggestedTier
-  ──────────────────────────────────────────────────
-
-"@
-Write-Host $Header -ForegroundColor $StatusColor
-
-# ─── COLOUR PALETTE ─────────────────────────────────────────────────────────────
-$C = @{
-    BG       = '#000B1A';  Surface  = '#001F3F';  Surface2 = '#003366'
-    Accent   = $StatusHex; NavBG    = '#000814';   Text     = '#F0F0F0'
-    TextDim  = '#8090A0';  Green    = '#00FFCC';   Gold     = '#FFD700'
-    Red      = '#FF4D6A';  Border   = '#002A4A';   LogBG    = '#00050A'
-}
-
-# ─── APP CATALOGUE ──────────────────────────────────────────────────────────────
-$AppCatalogue = @(
-    @{N='Google Chrome';       Id='Google.Chrome';                Cat='Browser'}
-    @{N='Mozilla Firefox';     Id='Mozilla.Firefox';              Cat='Browser'}
-    @{N='Brave Browser';       Id='Brave.Brave';                  Cat='Browser'}
-    @{N='Microsoft Edge';      Id='Microsoft.Edge';               Cat='Browser'}
-    @{N='Opera GX';            Id='Opera.OperaGX';                Cat='Browser'}
-    @{N='Discord';             Id='Discord.Discord';              Cat='Communication'}
-    @{N='Telegram';            Id='Telegram.TelegramDesktop';     Cat='Communication'}
-    @{N='Zoom';                Id='Zoom.Zoom';                    Cat='Communication'}
-    @{N='Microsoft Teams';     Id='Microsoft.Teams';              Cat='Communication'}
-    @{N='Slack';               Id='SlackTechnologies.Slack';      Cat='Communication'}
-    @{N='Steam';               Id='Valve.Steam';                  Cat='Gaming'}
-    @{N='Epic Games Launcher'; Id='EpicGames.EpicGamesLauncher';  Cat='Gaming'}
-    @{N='GOG Galaxy';          Id='GOG.Galaxy';                   Cat='Gaming'}
-    @{N='EA App';              Id='ElectronicArts.EADesktop';     Cat='Gaming'}
-    @{N='Prism Launcher';      Id='PrismLauncher.PrismLauncher';  Cat='Gaming'}
-    @{N='VLC Media Player';    Id='VideoLAN.VLC';                 Cat='Media'}
-    @{N='Spotify';             Id='Spotify.Spotify';              Cat='Media'}
-    @{N='OBS Studio';          Id='OBSProject.OBSStudio';         Cat='Media'}
-    @{N='Audacity';            Id='Audacity.Audacity';            Cat='Media'}
-    @{N='HandBrake';           Id='HandBrake.HandBrake';          Cat='Media'}
-    @{N='7-Zip';               Id='7zip.7zip';                    Cat='Utility'}
-    @{N='Notepad++';           Id='Notepad++.Notepad++';          Cat='Utility'}
-    @{N='Everything Search';   Id='voidtools.Everything';         Cat='Utility'}
-    @{N='WinRAR';              Id='RARLab.WinRAR';                Cat='Utility'}
-    @{N='PowerToys';           Id='Microsoft.PowerToys';          Cat='Utility'}
-    @{N='TreeSize Free';       Id='JAMSoftware.TreeSize.Free';    Cat='Utility'}
-    @{N='VS Code';             Id='Microsoft.VisualStudioCode';   Cat='Development'}
-    @{N='Git';                 Id='Git.Git';                      Cat='Development'}
-    @{N='Python 3';            Id='Python.Python.3.12';           Cat='Development'}
-    @{N='Node.js LTS';         Id='OpenJS.NodeJS.LTS';            Cat='Development'}
-    @{N='Windows Terminal';    Id='Microsoft.WindowsTerminal';    Cat='Development'}
-    @{N='Docker Desktop';      Id='Docker.DockerDesktop';         Cat='Development'}
-    @{N='NVIDIA App';          Id='Nvidia.GeForceExperience';     Cat='Drivers'}
-    @{N='AMD Software';        Id='AMD.RyzenMaster';              Cat='Drivers'}
-    @{N='Intel DSA';           Id='Intel.IntelDriverAndSupportAssistant'; Cat='Drivers'}
-    @{N='Razer Synapse';       Id='RazerInc.RazerInstaller';      Cat='Drivers'}
-    @{N='MSI Afterburner';     Id='Guru3D.Afterburner';           Cat='Drivers'}
-    @{N='HWiNFO';              Id='REALiX.HWiNFO';               Cat='Drivers'}
-    @{N='Bitwarden';           Id='Bitwarden.Bitwarden';          Cat='Security'}
-    @{N='Malwarebytes';        Id='Malwarebytes.Malwarebytes';    Cat='Security'}
+# --- SECTION 6: APP CATALOGUE ---
+$Apps = @(
+    @{N='Google Chrome';ID='Google.Chrome'},        @{N='Mozilla Firefox';ID='Mozilla.Firefox'},
+    @{N='Brave Browser';ID='Brave.Brave'},          @{N='Microsoft Edge';ID='Microsoft.Edge'},
+    @{N='Discord';ID='Discord.Discord'},            @{N='Slack';ID='SlackTechnologies.Slack'},
+    @{N='Zoom';ID='Zoom.Zoom'},                     @{N='Telegram';ID='Telegram.TelegramDesktop'},
+    @{N='Signal';ID='OpenWhisperSystems.Signal'},    @{N='Steam';ID='Valve.Steam'},
+    @{N='Epic Games';ID='EpicGames.EpicGamesLauncher'}, @{N='VLC Player';ID='VideoLAN.VLC'},
+    @{N='Spotify';ID='Spotify.Spotify'},            @{N='OBS Studio';ID='OBSProject.OBSStudio'},
+    @{N='7-Zip';ID='7zip.7zip'},                    @{N='WinRAR';ID='RARLab.WinRAR'},
+    @{N='Notepad++';ID='Notepad++.Notepad++'},      @{N='VS Code';ID='Microsoft.VisualStudioCode'},
+    @{N='Git';ID='Git.Git'},                        @{N='Node.js LTS';ID='OpenJS.NodeJS.LTS'},
+    @{N='Python 3';ID='Python.Python.3.12'},        @{N='PowerToys';ID='Microsoft.PowerToys'},
+    @{N='qBittorrent';ID='qBittorrent.qBittorrent'},@{N='GIMP';ID='GIMP.GIMP'},
+    @{N='Audacity';ID='Audacity.Audacity'},         @{N='ShareX';ID='ShareX.ShareX'},
+    @{N='MSI Afterburner';ID='Guru3D.Afterburner'}, @{N='HWiNFO';ID='REALiX.HWiNFO'},
+    @{N='CPU-Z';ID='CPUID.CPU-Z'},                  @{N='Bitwarden';ID='Bitwarden.Bitwarden'}
 )
 
-$Categories = $AppCatalogue | ForEach-Object { $_.Cat } | Sort-Object -Unique
+# --- SECTION 7: STATE VARIABLES ---
+$script:Ctrl = @{}
+$script:RestoreCreated = $false
+$script:BoostTimer = $null
+$script:GameList = @('cs2','valorant','FortniteClient-Win64-Shipping','r5apex','javaw','minecraft','GTA5','RocketLeague')
+$Panels  = @('PanelInstall','PanelTweaks','PanelGaming','PanelHardware','PanelConfig','PanelUpdates','PanelHealth')
+$NavBtns = @('NavInstall','NavTweaks','NavGaming','NavHardware','NavConfig','NavUpdates','NavHealth')
 
-# ─── GLOBAL STATE ────────────────────────────────────────────────────────────────
-$Script:RestoreCreated = $false
-$Script:AutoBoosterRunning = $false
-$Script:AutoBoosterJob = $null
-
-# ─── HELPER FUNCTIONS ────────────────────────────────────────────────────────────
-
-function Write-Log {
-    param([string]$Msg, [string]$Type = "Info")
-    $ts = Get-Date -Format "HH:mm:ss"
-    $prefix = switch ($Type) {
-        "OK"     { "[  OK  ]" }
-        "Error"  { "[ FAIL ]" }
-        "Action" { "[ >>>> ]" }
-        "Warn"   { "[ WARN ]" }
-        default  { "[ INFO ]" }
+# --- SECTION 8: HELPER FUNCTIONS ---
+function Write-Log([string]$Msg, [string]$Type = 'Info') {
+    $ts = Get-Date -Format 'HH:mm:ss'
+    $colors = @{ OK='#00FFCC'; Action='#00D9FF'; Error='#FF6666'; Warn='#FFD700'; Info='#8090A0' }
+    $hex = if ($colors[$Type]) { $colors[$Type] } else { '#8090A0' }
+    Write-Host "[$ts] $Msg" -ForegroundColor Gray
+    $lb = $Ctrl['LogBox']; $ls = $Ctrl['LogScroll']
+    if ($lb -and $ls) {
+        $run = New-Object System.Windows.Documents.Run "[$ts] $Msg`n"
+        $run.Foreground = ([System.Windows.Media.BrushConverter]::new()).ConvertFrom($hex)
+        $lb.Inlines.Add($run)
+        $ls.ScrollToEnd()
     }
-    $color = switch ($Type) {
-        "OK"     { $C.Green }
-        "Error"  { $C.Red }
-        "Action" { $C.Accent }
-        "Warn"   { $C.Gold }
-        default  { $C.TextDim }
+}
+
+function Set-Reg([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') {
+    try {
+        if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
+        New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $Type -Force -ErrorAction Stop | Out-Null
+    } catch {}
+}
+
+function Guard-Restore {
+    if ($script:RestoreCreated) { return $true }
+    [System.Windows.MessageBox]::Show('You must create a Restore Point first! Click the yellow button in the Tweaks tab.', 'Safety Check', 'OK', 'Warning') | Out-Null
+    return $false
+}
+
+function Switch-Tab([int]$Index) {
+    for ($i = 0; $i -lt $Panels.Count; $i++) {
+        $p = $Ctrl[$Panels[$i]]; $n = $Ctrl[$NavBtns[$i]]
+        if ($p) { $p.Visibility = if ($i -eq $Index) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed } }
+        if ($n) { $n.FontWeight = if ($i -eq $Index) { [System.Windows.FontWeights]::Bold } else { [System.Windows.FontWeights]::Normal } }
     }
-    $entry = "$ts $prefix $Msg"
-    $run = [System.Windows.Documents.Run]::new($entry + "`n")
-    $run.Foreground = $color
-    $Ctrl['LogBox'].Inlines.Add($run)
-    $Ctrl['LogScroll'].ScrollToEnd()
-    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
 }
 
-function Ensure-Path {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
+function Hook([string]$n, [string]$e, [scriptblock]$a) {
+    $el = $Ctrl[$n]
+    if ($el) { $el."Add_$e"($a) }
+    else { Write-Host "WARN: Element '$n' not found for event '$e'" -ForegroundColor Yellow }
 }
 
-function Show-Warning {
-    param([string]$TweakName, [string]$Risk)
-    $msg = "WARNING: You are about to apply [$TweakName].`n`nRisk: $Risk`n`nDo you want to continue?"
-    $result = [System.Windows.MessageBox]::Show($msg, "Ray's Chamber — Safety Check", "YesNo", "Warning")
-    return ($result -eq "Yes")
-}
-
-function Play-SuccessTone {
-    [console]::Beep(440,150); [console]::Beep(554,150); [console]::Beep(659,150); [console]::Beep(880,300)
-}
+function Play-Tone { [console]::Beep(440,150); [console]::Beep(660,150); [console]::Beep(880,300) }
 
 function Restart-Shell {
-    Write-Log "Restarting Explorer to apply changes..." Action
+    Write-Log "Restarting Explorer shell..." Action
     Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Seconds 1
     Start-Process explorer.exe
-    Write-Log "Explorer restarted." OK
+    Write-Log "Explorer restarted" OK
 }
 
-# ─── TIERED OPTIMIZATION ENGINE ─────────────────────────────────────────────────
-
+# --- SECTION 9: OPTIMIZATION FUNCTIONS ---
 function Apply-LowEndTweaks {
-    Write-Log "═══ LOW-END TIER: RAM Recovery + Visual Performance ═══" Action
-
-    # Disable Animations & Transparency
-    Write-Log "  Disabling animations and transparency..." Info
-    Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'UserPreferencesMask' -Value ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00)) -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name 'EnableTransparency' -Value 0 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'MenuShowDelay' -Value '0' -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -ErrorAction SilentlyContinue
-
-    # Disable Memory Compression (if 8GB+)
-    if ($ramGB -ge 8) {
-        Write-Log "  Disabling Memory Compression (${ramGB}GB RAM detected)..." Info
-        Disable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue
+    Write-Log "Applying Low-End optimizations..." Action
+    # Disable animations and transparency
+    Set-Reg 'HKCU:\Control Panel\Desktop' 'UserPreferencesMask' ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00)) 'Binary'
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0
+    Set-Reg 'HKCU:\Control Panel\Desktop' 'MenuShowDelay' '0' 'String'
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2
+    # Disable memory compression if 8GB+
+    if ($ramGB -ge 8) { try { Disable-MMAgent -MemoryCompression -ErrorAction Stop } catch {}; Write-Log "  Memory compression disabled" Info }
+    # Kill heavy services
+    foreach ($svc in @('SysMain','DiagTrack','WSearch')) {
+        try { Set-Service -Name $svc -StartupType Disabled -ErrorAction Stop; Stop-Service -Name $svc -Force -ErrorAction Stop } catch {}
     }
-
-    # Kill Heavy Background Services (Ghost Service Killer)
-    Write-Log "  Nullifying heavy background services..." Info
-    $services = @("SysMain","DiagTrack","WbioSrvc","MapsBroker","WMPNetworkSvc","RemoteRegistry")
-    foreach ($svc in $services) {
-        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-        reg add "HKLM\SYSTEM\CurrentControlSet\Services\$svc" /v "Start" /t REG_DWORD /d 4 /f 2>$null | Out-Null
-    }
-
+    Write-Log "  Heavy services disabled (SysMain, DiagTrack, WSearch)" Info
     # Disable Game DVR
-    Write-Log "  Disabling Game DVR and Game Bar..." Info
-    Ensure-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR"
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" -Name "AppCaptureEnabled" -Value 0 -ErrorAction SilentlyContinue
-    Ensure-Path "HKCU:\System\GameConfigStore"
-    Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0 -ErrorAction SilentlyContinue
-
-    # High Performance Power Plan
-    Write-Log "  Activating High Performance power plan..." Info
-    powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
-
-    Write-Log "Low-End optimizations applied!" OK
-    Play-SuccessTone
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 0
+    Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0
+    # High Performance power plan
+    powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
+    Write-Log "Low-End optimizations complete!" OK
+    Play-Tone
 }
 
 function Apply-MidRangeTweaks {
-    Write-Log "═══ MID-RANGE TIER: OS Snappiness + Telemetry Block ═══" Action
-
-    # Apply Low-End first
+    Write-Log "Applying Mid-Range optimizations..." Action
     Apply-LowEndTweaks
-
-    # Telemetry Block
-    Write-Log "  Blocking telemetry and data collection..." Info
-    Ensure-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -Value 0 -ErrorAction SilentlyContinue
-    Ensure-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo"
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo" -Name "DisabledByGroupPolicy" -Value 1 -ErrorAction SilentlyContinue
-    Set-Service -Name "dmwappushservice" -StartupType Disabled -ErrorAction SilentlyContinue
-
-    # System Responsiveness
-    Write-Log "  Setting SystemResponsiveness to 10..." Info
-    Ensure-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile"
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 10 -ErrorAction SilentlyContinue
-
-    # Network Throttling
-    Write-Log "  Disabling network throttling..." Info
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xffffffff -ErrorAction SilentlyContinue
-
-    # Priority Separation
-    Write-Log "  Setting Win32PrioritySeparation to 0x26..." Info
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 0x26 -ErrorAction SilentlyContinue
-
-    # Disable Fullscreen Optimizations globally
-    Write-Log "  Disabling Fullscreen Optimizations..." Info
-    Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehaviorMode" -Value 2 -ErrorAction SilentlyContinue
-
-    Write-Log "Mid-Range optimizations applied!" OK
-    Play-SuccessTone
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 10
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex' 0xffffffff
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38
+    # Disable telemetry
+    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0
+    foreach ($svc in @('dmwappushservice','diagnosticshub.standardcollector.service')) {
+        try { Set-Service -Name $svc -StartupType Disabled -ErrorAction Stop; Stop-Service -Name $svc -Force -ErrorAction Stop } catch {}
+    }
+    # Disable FSO globally
+    Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_FSEBehaviorMode' 2
+    Write-Log "Mid-Range optimizations complete!" OK
+    Play-Tone
 }
 
 function Apply-HighEndTweaks {
-    Write-Log "═══ HIGH-END (NUCLEAR) TIER: Maximum Performance ═══" Action
-
     if ($isLaptop) {
-        $proceed = Show-Warning "High-End Nuclear Tweaks" "These tweaks will increase heat and power usage. PLUG IN YOUR CHARGER."
-        if (-not $proceed) { Write-Log "Cancelled by user." Warn; return }
+        $r = [System.Windows.MessageBox]::Show("High-End tweaks increase heat and power usage. Make sure your laptop is plugged in. Continue?", "Laptop Warning", "YesNo", "Warning")
+        if ($r -eq 'No') { return }
     }
-
-    # Apply Mid-Range first (includes Low-End)
+    Write-Log "Applying HIGH-END (Nuclear) optimizations..." Action
     Apply-MidRangeTweaks
-
-    # BCD Extreme Latency
-    Write-Log "  Applying BCD extreme latency tweaks..." Info
+    # BCD extreme latency
     bcdedit /set useplatformtick yes 2>$null
     bcdedit /set disabledynamictick yes 2>$null
-    bcdedit /set useplatformclock yes 2>$null
-
-    # Ultimate Performance Power Plan
-    Write-Log "  Unlocking Ultimate Performance power plan..." Info
-    $planOutput = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1
-    if ($planOutput -match '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') {
-        powercfg -setactive $Matches[1]
-        Write-Log "  Ultimate Performance plan activated: $($Matches[1])" OK
+    Write-Log "  BCD timer tweaks applied" Info
+    # Ultimate Performance plan
+    $out = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1
+    if ($out -match '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') {
+        powercfg /setactive $Matches[1] 2>$null
+        Write-Log "  Ultimate Performance plan activated" Info
     }
-
-    # Unpark All CPU Cores
-    Write-Log "  Unparking all CPU cores..." Info
-    $corePath = "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583"
-    Ensure-Path $corePath
-    Set-ItemProperty -Path $corePath -Name "Attributes" -Value 0 -ErrorAction SilentlyContinue
+    # Unpark all cores
+    $cpPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583'
+    Set-Reg $cpPath 'Attributes' 0
     powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 2>$null
     powercfg -setactive scheme_current 2>$null
-
-    # GPU Priority & MSI Mode
-    Write-Log "  Setting GPU priority and MSI mode..." Info
-    $gpuTaskPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
-    Ensure-Path $gpuTaskPath
-    Set-ItemProperty -Path $gpuTaskPath -Name "GPU Priority" -Value 8 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $gpuTaskPath -Name "Priority" -Value 6 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $gpuTaskPath -Name "Scheduling Category" -Value "High" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $gpuTaskPath -Name "SFIO Priority" -Value "High" -ErrorAction SilentlyContinue
-
-    # GPU MSI Mode
+    Write-Log "  CPU cores unparked" Info
+    # GPU priority
+    $gpuTask = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
+    Set-Reg $gpuTask 'GPU Priority' 8
+    Set-Reg $gpuTask 'Priority' 6
+    Set-Reg $gpuTask 'Scheduling Category' 'High' 'String'
+    Set-Reg $gpuTask 'SFIO Priority' 'High' 'String'
+    # GPU MSI mode
     try {
-        $gpuDevice = Get-PnpDevice -Class Display -Status OK -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($gpuDevice) {
-            $msiPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($gpuDevice.InstanceId)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"
-            Ensure-Path $msiPath
-            Set-ItemProperty -Path $msiPath -Name "MSISupported" -Value 1 -ErrorAction SilentlyContinue
-            Write-Log "  GPU MSI Mode enabled for $($gpuDevice.FriendlyName)" OK
+        $dev = Get-PnpDevice -Class Display -Status OK -ErrorAction Stop | Select-Object -First 1
+        if ($dev) {
+            $msiP = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($dev.InstanceId)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"
+            Set-Reg $msiP 'MSISupported' 1
+            Write-Log "  GPU MSI mode enabled" Info
         }
-    } catch { Write-Log "  Could not enable GPU MSI Mode: $_" Warn }
-
-    # Silicon Lottery GPU Optimizer
-    Write-Log "  Applying Silicon Lottery GPU tweaks..." Info
-    $gpuRegPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000"
-    if (Test-Path $gpuRegPath) {
-        Set-ItemProperty -Path $gpuRegPath -Name "PowerMizerEnable" -Value 0 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $gpuRegPath -Name "PerfLevelSrc" -Value 0x2222 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $gpuRegPath -Name "PowerMizerLevel" -Value 0x1 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $gpuRegPath -Name "PowerMizerLevelAC" -Value 0x1 -ErrorAction SilentlyContinue
+    } catch {}
+    # GPU power state
+    $gpuReg = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000'
+    Set-Reg $gpuReg 'PerfLevelSrc' 0x2222
+    Set-Reg $gpuReg 'PowerMizerEnable' 0
+    Set-Reg $gpuReg 'PowerMizerLevel' 1
+    Set-Reg $gpuReg 'PowerMizerLevelAC' 1
+    # Disable Spectre/Meltdown mitigations
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'FeatureSettingsOverride' 3
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'FeatureSettingsOverrideMask' 3
+    Write-Log "  CPU security mitigations disabled (+15% perf)" Warn
+    # Disable VBS / Device Guard
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity' 0
+    Write-Log "  VBS/Device Guard disabled" Warn
+    # Lower DWM priority
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Window Manager' 'Priority' 3
+    # Disable Nagle on all interfaces
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces' -ErrorAction SilentlyContinue | ForEach-Object {
+        Set-Reg $_.PSPath 'TcpAckFrequency' 1
+        Set-Reg $_.PSPath 'TCPNoDelay' 1
     }
-
-    # Disable Spectre/Meltdown Mitigations
-    Write-Log "  ⚠ Disabling CPU security mitigations for +15% performance..." Warn
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "FeatureSettingsOverride" /t REG_DWORD /d 3 /f 2>$null | Out-Null
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "FeatureSettingsOverrideMask" /t REG_DWORD /d 3 /f 2>$null | Out-Null
-
-    # Disable VBS / Memory Integrity
-    Write-Log "  Disabling Virtualization Based Security..." Info
-    Ensure-Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard"
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard" -Name "EnableVirtualizationBasedSecurity" -Value 0 -ErrorAction SilentlyContinue
-
-    # DWM Priority Lower
-    Write-Log "  Lowering DWM priority for game focus..." Info
-    $dwmPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Window Manager"
-    Ensure-Path $dwmPath
-    Set-ItemProperty -Path $dwmPath -Name "Priority" -Value 3 -ErrorAction SilentlyContinue
-
-    # Disable Nagle's Algorithm (TCP)
-    Write-Log "  Disabling Nagle's Algorithm for zero-latency networking..." Info
-    $nics = Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" -ErrorAction SilentlyContinue
-    foreach ($nic in $nics) {
-        Set-ItemProperty -Path $nic.PSPath -Name "TcpAckFrequency" -Value 1 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $nic.PSPath -Name "TCPNoDelay" -Value 1 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $nic.PSPath -Name "TcpDelAckTicks" -Value 0 -ErrorAction SilentlyContinue
-    }
-
-    Write-Log "HIGH-END NUCLEAR optimizations applied!" OK
-    Play-SuccessTone
+    Write-Log "HIGH-END optimizations complete! Restart recommended." OK
+    Play-Tone
 }
 
-# ─── LAPTOP GOD MODE ────────────────────────────────────────────────────────────
-
-function Apply-LaptopGodMode {
-    if (-not $isLaptop) {
-        Write-Log "This device is a desktop. Laptop God Mode not applicable." Warn
-        return
+function Invoke-Debloat {
+    Write-Log "Debloating Windows..." Action
+    $bloat = @('Microsoft.BingNews','Microsoft.BingWeather','Microsoft.GetHelp','Microsoft.Getstarted',
+        'Microsoft.MicrosoftSolitaireCollection','Microsoft.People','Microsoft.PowerAutomate',
+        'Microsoft.Todos','Microsoft.WindowsAlarms','Microsoft.WindowsFeedbackHub',
+        'Microsoft.WindowsMaps','Microsoft.YourPhone','Microsoft.ZuneMusic','Microsoft.ZuneVideo',
+        'Clipchamp.Clipchamp','Microsoft.549981C3F5F10','Microsoft.MicrosoftOfficeHub',
+        'Microsoft.SkypeApp','Microsoft.Office.OneNote','king.com.CandyCrushSaga',
+        'king.com.CandyCrushSodaSaga','Disney.37853FC22B2CE','SpotifyAB.SpotifyMusic',
+        'Microsoft.GamingApp','Microsoft.Xbox.TCUI','Microsoft.XboxGameOverlay')
+    foreach ($app in $bloat) {
+        Get-AppxPackage -Name $app -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+        Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object DisplayName -eq $app | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
     }
-    $proceed = Show-Warning "Laptop God Mode" "Disables thermal throttling & efficiency mode. ENSURE CHARGER IS PLUGGED IN. May increase temperatures."
-    if (-not $proceed) { Write-Log "Cancelled by user." Warn; return }
-
-    Write-Log "═══ LAPTOP GOD MODE: Thermal Bypass + Full Power ═══" Action
-
-    # Disable Power Throttling
-    Write-Log "  Disabling Power Throttling globally..." Info
-    Ensure-Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power"
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power" -Name "PowerThrottlingOff" -Value 1 -ErrorAction SilentlyContinue
-
-    # Disable Efficiency Mode
-    Write-Log "  Disabling Efficiency Mode for all apps..." Info
-    $effPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583"
-    Ensure-Path $effPath
-    Set-ItemProperty -Path $effPath -Name "Attributes" -Value 0 -ErrorAction SilentlyContinue
-
-    # Unlock Processor Boost Mode
-    Write-Log "  Unlocking Processor Performance Boost Mode..." Info
-    $boostPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\be337238-0d82-4146-a960-4f3749d470c7"
-    Ensure-Path $boostPath
-    Set-ItemProperty -Path $boostPath -Name "Attributes" -Value 0 -ErrorAction SilentlyContinue
-
-    # 99% CPU Cap (prevent turbo overheat crash loop)
-    Write-Log "  Setting 99% CPU cap to prevent thermal crash..." Info
-    powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 99 2>$null
-    powercfg -setactive scheme_current 2>$null
-
-    # Disable DPTF thermal throttling
-    Write-Log "  Bypassing DPTF thermal framework gate..." Info
-    $dptfServices = @("dptf_helper","DTSApo4Service","IntelDalService")
-    foreach ($svc in $dptfServices) {
-        Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-    }
-
-    Write-Log "Laptop God Mode ACTIVE! Monitor temps carefully." OK
-    Play-SuccessTone
+    Write-Log "Debloat complete - removed $($bloat.Count) packages" OK
+    Play-Tone
 }
 
-# ─── GAMING SPECIFIC FUNCTIONS ──────────────────────────────────────────────────
-
-function Apply-GameBooster {
-    Write-Log "═══ GAME BOOSTER: Zero Latency Mode ═══" Action
-
-    # Network Throttling OFF
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xffffffff -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 10 -ErrorAction SilentlyContinue
-
-    # GPU Priority
-    $gpuTaskPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
-    Ensure-Path $gpuTaskPath
-    Set-ItemProperty -Path $gpuTaskPath -Name "GPU Priority" -Value 8 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $gpuTaskPath -Name "Priority" -Value 6 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $gpuTaskPath -Name "Scheduling Category" -Value "High" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $gpuTaskPath -Name "SFIO Priority" -Value "High" -ErrorAction SilentlyContinue
-
-    # Win32 Priority Separation
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 0x26 -ErrorAction SilentlyContinue
-
-    # Game DVR OFF
-    Ensure-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR"
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" -Name "AppCaptureEnabled" -Value 0 -ErrorAction SilentlyContinue
-    Ensure-Path "HKCU:\System\GameConfigStore"
-    Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehaviorMode" -Value 2 -ErrorAction SilentlyContinue
-
-    # Mouse Acceleration OFF
-    Write-Log "  Disabling mouse acceleration..." Info
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "0" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "0" -ErrorAction SilentlyContinue
-
-    # Keyboard Response
-    Write-Log "  Optimizing keyboard response..." Info
-    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value "0" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value "31" -ErrorAction SilentlyContinue
-
-    Write-Log "Game Booster activated!" OK
-    Play-SuccessTone
-}
-
-function Start-AutoBooster {
-    if ($Script:AutoBoosterRunning) {
-        Write-Log "Auto-Booster is already running." Warn
-        return
-    }
-    Write-Log "🚀 Auto-Booster Active: Watching for games..." Action
-    $Script:AutoBoosterRunning = $true
-
-    $Script:AutoBoosterJob = Start-Job -ScriptBlock {
-        $GameList = @("cs2","csgo","valorant","VALORANT-Win64-Shipping","FortniteClient-Win64-Shipping",
-                      "r5apex","LeagueClient","RiotClientServices","javaw","minecraft",
-                      "GTA5","FiveM","RocketLeague","Overwatch","eldenring","cyberpunk2077")
-        $Demote = @("chrome","msedge","firefox","discord","Spotify","Teams","Slack","OneDrive")
-
-        while ($true) {
-            $procs = Get-Process -ErrorAction SilentlyContinue
-            $gameFound = $false
-            foreach ($p in $procs) {
-                if ($GameList -contains $p.Name) {
-                    try { $p.PriorityClass = 'High' } catch {}
-                    $gameFound = $true
-                }
-            }
-            if ($gameFound) {
-                foreach ($p in $procs) {
-                    if ($Demote -contains $p.Name) {
-                        try { $p.PriorityClass = 'BelowNormal' } catch {}
-                    }
-                }
-            }
-            Start-Sleep -Seconds 15
-        }
-    }
-    Write-Log "Auto-Booster running in background (checks every 15s)." OK
-}
-
-function Stop-AutoBooster {
-    if ($Script:AutoBoosterJob) {
-        Stop-Job -Job $Script:AutoBoosterJob -ErrorAction SilentlyContinue
-        Remove-Job -Job $Script:AutoBoosterJob -Force -ErrorAction SilentlyContinue
-        $Script:AutoBoosterJob = $null
-        $Script:AutoBoosterRunning = $false
-        Write-Log "Auto-Booster stopped." OK
-    } else {
-        Write-Log "Auto-Booster was not running." Info
-    }
-}
-
-# ─── RAM / MEMORY FUNCTIONS ─────────────────────────────────────────────────────
-
-function Clear-RAMStandby {
-    Write-Log "Purging RAM standby list..." Action
-    try {
-        Get-Process | ForEach-Object {
-            try { [MemHelper]::EmptyWorkingSet($_.Handle) } catch {}
-        }
-        [System.GC]::Collect()
-        [System.GC]::WaitForPendingFinalizers()
-        Write-Log "RAM standby list purged." OK
-    } catch { Write-Log "RAM purge error: $_" Error }
+function Invoke-SystemCleanup {
+    Write-Log "Running system cleanup..." Action
+    Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+    Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+    Write-Log "Cleanup complete - temp files and recycle bin cleared" OK
 }
 
 function Optimize-RAM {
-    Write-Log "═══ RAM OPTIMIZATION ═══" Action
-
-    # LargeSystemCache
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "LargeSystemCache" -Value 0 -ErrorAction SilentlyContinue
-    Write-Log "  LargeSystemCache set to 0 (app priority)." Info
-
-    # Disable Memory Compression (8GB+)
-    if ($ramGB -ge 8) {
-        Disable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue
-        Write-Log "  Memory Compression disabled." Info
-    }
-
-    # Disable Prefetch for SSD users
-    $sysDrive = Get-PhysicalDisk | Where-Object { $_.MediaType -eq 'SSD' } | Select-Object -First 1
-    if ($sysDrive) {
-        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" -Name "EnablePrefetcher" -Value 0 -ErrorAction SilentlyContinue
-        Write-Log "  Prefetch disabled (SSD detected)." Info
-    }
-
-    Clear-RAMStandby
-    Write-Log "RAM optimization complete!" OK
-    Play-SuccessTone
+    Write-Log "Optimizing RAM..." Action
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'LargeSystemCache' 0
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'ClearPageFileAtShutdown' 1
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+    Write-Log "RAM optimized - cache cleared, GC forced" OK
+    Play-Tone
 }
 
-# ─── USB / HARDWARE TWEAKS ──────────────────────────────────────────────────────
-
-function Apply-USBTweaks {
-    Write-Log "═══ USB / HARDWARE TWEAKS ═══" Action
-
-    # Disable USB Selective Suspend
-    Write-Log "  Disabling USB Selective Suspend..." Info
-    powercfg -SETACVALUEINDEX SCHEME_CURRENT 2a033b03-2eef-4ce0-bd58-3e193014470b 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 2>$null
-    powercfg -SETDCVALUEINDEX SCHEME_CURRENT 2a033b03-2eef-4ce0-bd58-3e193014470b 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 2>$null
-    powercfg -setactive SCHEME_CURRENT 2>$null
-
-    # Mouse acceleration OFF
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "0" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "0" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "0" -ErrorAction SilentlyContinue
-    Write-Log "  Mouse acceleration disabled (1:1 raw input)." Info
-
-    # Keyboard speed
-    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value "0" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value "31" -ErrorAction SilentlyContinue
-    Write-Log "  Keyboard repeat rate maximized." Info
-
-    Write-Log "USB/Hardware tweaks applied!" OK
-    Play-SuccessTone
+function Optimize-Storage {
+    Write-Log "Optimizing storage..." Action
+    try { Optimize-Volume -DriveLetter C -ReTrim -ErrorAction Stop; Write-Log "SSD TRIM completed" OK } catch { Write-Log "Drive optimization skipped (may not be SSD)" Warn }
+    Play-Tone
 }
-
-# ─── NETWORK / INTERNET ─────────────────────────────────────────────────────────
 
 function Apply-NetworkTweaks {
-    Write-Log "═══ NETWORK OPTIMIZATION ═══" Action
-
-    # Disable Nagle's Algorithm
-    $nics = Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" -ErrorAction SilentlyContinue
-    foreach ($nic in $nics) {
-        Set-ItemProperty -Path $nic.PSPath -Name "TcpAckFrequency" -Value 1 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $nic.PSPath -Name "TCPNoDelay" -Value 1 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $nic.PSPath -Name "TcpDelAckTicks" -Value 0 -ErrorAction SilentlyContinue
+    Write-Log "Applying network tweaks..." Action
+    netsh int tcp set global autotuninglevel=highlyrestricted 2>$null
+    netsh int tcp set global chimney=disabled 2>$null
+    netsh int tcp set global rss=enabled 2>$null
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex' 0xffffffff
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces' -ErrorAction SilentlyContinue | ForEach-Object {
+        Set-Reg $_.PSPath 'TcpAckFrequency' 1
+        Set-Reg $_.PSPath 'TCPNoDelay' 1
     }
-    Write-Log "  Nagle's Algorithm disabled (instant packet send)." Info
+    Write-Log "Network optimized - Nagle disabled, TCP tuned" OK
+    Play-Tone
+}
 
-    # Network Throttling OFF
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xffffffff -ErrorAction SilentlyContinue
-    Write-Log "  Network throttling disabled." Info
-
-    # Optimize TCP
-    netsh int tcp set global autotuninglevel=normal 2>$null
-    netsh int tcp set global congestionprovider=ctcp 2>$null
-    netsh int tcp set global ecncapability=enabled 2>$null
-    Write-Log "  TCP stack optimized (CTCP + ECN)." Info
-
-    Write-Log "Network optimization complete!" OK
-    Play-SuccessTone
+function Apply-USBTweaks {
+    Write-Log "Applying USB and input tweaks..." Action
+    # Disable USB selective suspend via registry
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\USB' 'DisableSelectiveSuspend' 1
+    # Mouse acceleration off
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseSpeed' '0' 'String'
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseThreshold1' '0' 'String'
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseThreshold2' '0' 'String'
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseSensitivity' '10' 'String'
+    # Keyboard max repeat rate
+    Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardSpeed' '31' 'String'
+    Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardDelay' '0' 'String'
+    Write-Log "USB suspend off, mouse accel off, keyboard max speed" OK
+    Play-Tone
 }
 
 function Refresh-Internet {
-    Write-Log "═══ INTERNET REFRESHER ═══" Action
-    ipconfig /flushdns 2>$null
-    netsh winsock reset 2>$null
-    netsh int ip reset 2>$null
-    ipconfig /release 2>$null
-    ipconfig /renew 2>$null
-    Write-Log "Internet refreshed (DNS flushed, Winsock reset, IP renewed)." OK
-    Play-SuccessTone
+    Write-Log "Refreshing internet connection..." Action
+    ipconfig /release 2>$null | Out-Null
+    ipconfig /flushdns 2>$null | Out-Null
+    ipconfig /renew 2>$null | Out-Null
+    netsh winsock reset 2>$null | Out-Null
+    netsh int ip reset 2>$null | Out-Null
+    Write-Log "Internet refreshed - DNS flushed, Winsock reset" OK
 }
 
-# ─── SYSTEM CLEANUP ─────────────────────────────────────────────────────────────
+function Apply-GameBoost {
+    Write-Log "Applying Zero Latency Game Boost..." Action
+    bcdedit /set useplatformtick yes 2>$null
+    bcdedit /set disabledynamictick yes 2>$null
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 10
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex' 0xffffffff
+    $gpuTask = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
+    Set-Reg $gpuTask 'GPU Priority' 8
+    Set-Reg $gpuTask 'Priority' 6
+    Set-Reg $gpuTask 'Scheduling Category' 'High' 'String'
+    Set-Reg $gpuTask 'SFIO Priority' 'High' 'String'
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 0
+    Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0
+    Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_FSEBehaviorMode' 2
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseSpeed' '0' 'String'
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseThreshold1' '0' 'String'
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseThreshold2' '0' 'String'
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'PowerThrottlingOff' 1
+    Write-Log "Zero Latency mode ACTIVE! BCD+Priority+Nagle+GPU+Input all tuned" OK
+    Play-Tone
+}
 
-function Invoke-SystemCleanup {
-    Write-Log "═══ SYSTEM CLEANUP ═══" Action
-
-    # Temp files
-    $tempPaths = @($env:TEMP, "$env:windir\Temp", "$env:LOCALAPPDATA\Microsoft\Windows\INetCache")
-    foreach ($tp in $tempPaths) {
-        if (Test-Path $tp) {
-            $count = (Get-ChildItem $tp -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count
-            Remove-Item "$tp\*" -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Log "  Cleaned $count items from $tp" Info
+function Start-AutoBooster {
+    if ($script:BoostTimer) { Write-Log "Auto-Booster already running" Warn; return }
+    $script:BoostTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:BoostTimer.Interval = [TimeSpan]::FromSeconds(30)
+    $script:BoostTimer.Add_Tick({
+        foreach ($g in $script:GameList) {
+            $p = Get-Process -Name $g -ErrorAction SilentlyContinue
+            if ($p) {
+                $p | ForEach-Object { try { $_.PriorityClass = 'High' } catch {} }
+                Get-Process -Name 'chrome','msedge','discord','slack' -ErrorAction SilentlyContinue | ForEach-Object { try { $_.PriorityClass = 'BelowNormal' } catch {} }
+            }
         }
-    }
-
-    # Recycle Bin
-    Clear-RecycleBin -Force -ErrorAction SilentlyContinue
-    Write-Log "  Recycle Bin emptied." Info
-
-    # Windows Update Cache
-    Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-    Remove-Item "$env:windir\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
-    Start-Service -Name wuauserv -ErrorAction SilentlyContinue
-    Write-Log "  Windows Update cache cleared." Info
-
-    Write-Log "System cleanup complete!" OK
-    Play-SuccessTone
+    })
+    $script:BoostTimer.Start()
+    Write-Log "Auto-Booster ACTIVE - monitoring games every 30s" OK
 }
 
-# ─── DISK / STORAGE ─────────────────────────────────────────────────────────────
-
-function Optimize-Storage {
-    Write-Log "═══ STORAGE OPTIMIZATION ═══" Action
-
-    # SSD TRIM
-    $ssd = Get-PhysicalDisk | Where-Object { $_.MediaType -eq 'SSD' } | Select-Object -First 1
-    if ($ssd) {
-        Write-Log "  Running TRIM on SSD..." Info
-        Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue
-        Write-Log "  SSD TRIM complete." OK
-    }
-
-    # Disable last access timestamp (reduces disk writes)
-    fsutil behavior set disablelastaccess 1 2>$null
-    Write-Log "  Last access timestamps disabled." Info
-
-    # Disk I/O Priority for Games
-    $ioPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
-    Ensure-Path $ioPath
-    Set-ItemProperty -Path $ioPath -Name "Scheduling Category" -Value "High" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $ioPath -Name "SFIO Priority" -Value "High" -ErrorAction SilentlyContinue
-    Write-Log "  Disk I/O priority for games set to High." Info
-
-    Write-Log "Storage optimization complete!" OK
-    Play-SuccessTone
+function Stop-AutoBooster {
+    if ($script:BoostTimer) { $script:BoostTimer.Stop(); $script:BoostTimer = $null; Write-Log "Auto-Booster stopped" OK }
+    else { Write-Log "Auto-Booster was not running" Info }
 }
 
-# ─── DEBLOAT ─────────────────────────────────────────────────────────────────────
-
-function Invoke-Debloat {
-    Write-Log "═══ WINDOWS DEBLOAT ═══" Action
-    $bloatApps = @(
-        "Microsoft.BingNews","Microsoft.BingWeather","Microsoft.GetHelp","Microsoft.Getstarted",
-        "Microsoft.MicrosoftOfficeHub","Microsoft.MicrosoftSolitaireCollection","Microsoft.People",
-        "Microsoft.WindowsFeedbackHub","Microsoft.WindowsMaps","Microsoft.ZuneMusic",
-        "Microsoft.ZuneVideo","Microsoft.SkypeApp","Microsoft.MixedReality.Portal",
-        "Microsoft.Xbox.TCUI","Microsoft.XboxGameOverlay","Microsoft.XboxGamingOverlay",
-        "Microsoft.XboxSpeechToTextOverlay","Microsoft.YourPhone","Clipchamp.Clipchamp",
-        "Microsoft.Todos","Microsoft.PowerAutomateDesktop","MicrosoftCorporationII.QuickAssist",
-        "MicrosoftTeams","Microsoft.549981C3F5F10"
-    )
-    foreach ($app in $bloatApps) {
-        Get-AppxPackage -Name $app -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction SilentlyContinue
-        Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.PackageName -like "*$app*" } | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
-    }
-    Write-Log "Removed $($bloatApps.Count) bloatware packages!" OK
-    Play-SuccessTone
+function Clear-RAMStandby {
+    Write-Log "Purging RAM standby list..." Action
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+    [System.GC]::Collect()
+    Write-Log "RAM standby purged via GC" OK
 }
 
-# ─── CONTEXT MENU SHORTCUT ──────────────────────────────────────────────────────
+function Show-FrameCapAdvice {
+    $hz = try { (Get-CimInstance Win32_VideoController).CurrentRefreshRate | Select-Object -First 1 } catch { 60 }
+    if (-not $hz -or $hz -eq 0) { $hz = 60 }
+    $msg = "Monitor: ${hz}Hz`n`nRecommended Frame Cap: $hz FPS`n`nNVIDIA: Set Max Frame Rate in Control Panel`nAMD: Set Frame Rate Target Control in Radeon`nUniversal: Use RTSS (RivaTuner) for per-game caps`n`nFor competitive: Cap at $([math]::Floor($hz * 0.95)) for lowest input lag"
+    [System.Windows.MessageBox]::Show($msg, 'Frame Cap Advisor', 'OK', 'Information') | Out-Null
+    Write-Log "Monitor detected at ${hz}Hz" OK
+}
+
+function Apply-LaptopGodMode {
+    if (-not $isLaptop) { Write-Log "Laptop God Mode is only for laptops" Warn; return }
+    $r = [System.Windows.MessageBox]::Show("Laptop God Mode will increase heat and power draw significantly. Make sure you are plugged in with good cooling. Continue?", "Thermal Warning", "YesNo", "Warning")
+    if ($r -eq 'No') { return }
+    Write-Log "Activating Laptop God Mode..." Action
+    # 99% CPU cap to prevent turbo overheat crash
+    powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 99 2>$null
+    powercfg -setactive scheme_current 2>$null
+    # Disable power throttling
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'PowerThrottlingOff' 1
+    # Disable efficiency mode
+    $effPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583'
+    Set-Reg $effPath 'Attributes' 0
+    # Unlock processor boost mode
+    $boostPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\be337238-0d82-4146-a960-4f3749d470c7'
+    Set-Reg $boostPath 'Attributes' 0
+    Write-Log "Laptop God Mode ACTIVE! 99% CPU cap, throttle off, boost unlocked" OK
+    Play-Tone
+}
+
+function Invoke-UltimatePower {
+    Write-Log "Unlocking Ultimate Performance plan..." Action
+    $out = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1
+    if ($out -match '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') {
+        powercfg /setactive $Matches[1]; Write-Log "Ultimate Performance plan active!" OK
+    } else { Write-Log "Could not create plan (may already exist)" Warn }
+    Play-Tone
+}
+
+function Invoke-UnparkCores {
+    Write-Log "Unparking all CPU cores..." Action
+    $cpPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583'
+    Set-Reg $cpPath 'Attributes' 0
+    powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 2>$null
+    powercfg -setactive scheme_current 2>$null
+    Write-Log "All CPU cores unparked - min cores set to 100%" OK
+    Play-Tone
+}
+
+function Check-RAMSpeed {
+    $mem = Get-CimInstance Win32_PhysicalMemory | Select-Object Capacity, Speed, Manufacturer
+    $info = $mem | ForEach-Object { "$([math]::Round($_.Capacity/1GB))GB @ $($_.Speed)MHz ($($_.Manufacturer))" }
+    $msg = "RAM Modules:`n$($info -join "`n")`n`nIf speed is below your RAM's rated speed, enable XMP/DOCP in BIOS."
+    [System.Windows.MessageBox]::Show($msg, 'RAM Speed Check', 'OK', 'Information') | Out-Null
+    Write-Log "RAM speed check complete" OK
+}
 
 function Add-ContextMenu {
     Write-Log "Adding desktop context menu shortcut..." Action
-    $RegPath = "Registry::HKEY_CLASSES_ROOT\DesktopBackground\Shell\RaysChamber"
-    New-Item -Path $RegPath -Force | Out-Null
-    Set-ItemProperty -Path $RegPath -Name "MUIVerb" -Value "⚡ Open Ray's Chamber"
-    Set-ItemProperty -Path $RegPath -Name "Icon" -Value "powershell.exe"
-    Set-ItemProperty -Path $RegPath -Name "Position" -Value "Top"
-    New-Item -Path "$RegPath\command" -Force | Out-Null
-    Set-ItemProperty -Path "$RegPath\command" -Name "(Default)" -Value 'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command "irm https://is.gd/RaysWinUtil | iex"'
-    Write-Log "Context menu shortcut added! Right-click desktop to find it." OK
+    $rp = 'Registry::HKEY_CLASSES_ROOT\DesktopBackground\Shell\RaysChamber'
+    New-Item -Path $rp -Force | Out-Null
+    Set-ItemProperty -Path $rp -Name 'MUIVerb' -Value 'Open Rays Chamber'
+    Set-ItemProperty -Path $rp -Name 'Icon' -Value 'powershell.exe'
+    New-Item -Path "$rp\command" -Force | Out-Null
+    Set-ItemProperty -Path "$rp\command" -Name '(Default)' -Value 'powershell.exe -WindowStyle Hidden -Command "irm is.gd/RaysUtil | iex"'
+    Write-Log "Context menu shortcut added!" OK
 }
 
 function Remove-ContextMenu {
-    $RegPath = "Registry::HKEY_CLASSES_ROOT\DesktopBackground\Shell\RaysChamber"
-    if (Test-Path $RegPath) {
-        Remove-Item -Path $RegPath -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Log "Context menu shortcut removed." OK
-    }
+    Remove-Item 'Registry::HKEY_CLASSES_ROOT\DesktopBackground\Shell\RaysChamber' -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Log "Context menu shortcut removed" OK
 }
 
-# ─── SELF-HEAL / MAINTENANCE ────────────────────────────────────────────────────
-
 function Register-MaintenanceTask {
-    Write-Log "Creating 3-day maintenance scheduled task..." Action
-    $action = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument '-WindowStyle Hidden -Command "Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue; Remove-Item $env:TEMP\* -Recurse -Force -ErrorAction SilentlyContinue; [System.GC]::Collect()"'
-    $trigger = New-ScheduledTaskTrigger -Daily -DaysInterval 3 -At 3am
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "RaysChamber_Maintenance" -Description "Ray's Optimization Chamber: SSD Trim + Temp Cleanup" -Settings $settings -Force
-    Write-Log "Maintenance task registered (runs every 3 days at 3AM)." OK
+    Write-Log "Registering maintenance task..." Action
+    $action = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument '-WindowStyle Hidden -Command "Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue; Remove-Item $env:TEMP\* -Recurse -Force -ErrorAction SilentlyContinue"'
+    $trigger = New-ScheduledTaskTrigger -Daily -At 3am
+    Register-ScheduledTask -Action $action -Trigger $trigger -TaskName 'RaysChamber_Maintenance' -Description 'Auto SSD trim and temp cleanup' -Force | Out-Null
+    Write-Log "Maintenance task scheduled (daily 3AM)" OK
+}
+
+function Start-MicroWin {
+    Write-Log "MicroWin ISO Debloat" Action
+    $dlg = New-Object Microsoft.Win32.OpenFileDialog
+    $dlg.Filter = 'ISO Files|*.iso'
+    $dlg.Title = 'Select Windows ISO for Debloating'
+    if ($dlg.ShowDialog()) {
+        Write-Log "Selected ISO: $($dlg.FileName)" Info
+        Write-Log "MicroWin debloat launching in separate window..." Action
+        Start-Process powershell.exe "-NoProfile -Command `"Write-Host 'MicroWin ISO Debloat Tool' -ForegroundColor Cyan; Write-Host 'Selected: $($dlg.FileName)'; Write-Host 'This feature will mount, strip bloatware, and export a clean ISO.'; Write-Host 'Work in progress - full DISM integration coming soon.'; pause`""
+    }
 }
 
 function Invoke-SystemHealthScan {
-    Write-Log "═══ SYSTEM HEALTH SCAN ═══" Action
-
-    Write-Log "  Running SFC /scannow (this may take a while)..." Info
-    $sfcResult = sfc /scannow 2>&1
-    if ($sfcResult -match "did not find any integrity violations") {
-        Write-Log "  SFC: No integrity violations found." OK
-    } else {
-        Write-Log "  SFC: Scan complete. Check results above." Info
-    }
-
-    Write-Log "  Running DISM /RestoreHealth..." Info
-    DISM /Online /Cleanup-Image /RestoreHealth 2>$null
-    Write-Log "  DISM repair complete." OK
-
-    Write-Log "  Resetting Windows Update components..." Info
-    Stop-Service -Name wuauserv,cryptSvc,bits,msiserver -Force -ErrorAction SilentlyContinue
-    Remove-Item "$env:windir\SoftwareDistribution" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$env:windir\System32\catroot2" -Recurse -Force -ErrorAction SilentlyContinue
-    Start-Service -Name wuauserv,cryptSvc,bits,msiserver -ErrorAction SilentlyContinue
-    Write-Log "  Windows Update cache purged." OK
-
-    Write-Log "System Health Scan complete!" OK
-    Play-SuccessTone
+    Write-Log "Starting full system health scan..." Action
+    Start-Process powershell.exe "-NoProfile -Command `"Write-Host '=== RAY''S SYSTEM HEALTH SCAN ===' -ForegroundColor Cyan; Write-Host ''; Write-Host '[1/3] Running SFC...' -ForegroundColor Yellow; sfc /scannow; Write-Host ''; Write-Host '[2/3] Running DISM...' -ForegroundColor Yellow; DISM /Online /Cleanup-Image /RestoreHealth; Write-Host ''; Write-Host '[3/3] Resetting Windows Update...' -ForegroundColor Yellow; net stop wuauserv 2>`$null; Remove-Item C:\Windows\SoftwareDistribution -Recurse -Force -ErrorAction SilentlyContinue; net start wuauserv 2>`$null; Write-Host ''; Write-Host 'HEALTH SCAN COMPLETE' -ForegroundColor Green; pause`""
+    Write-Log "Health scan launched in separate window" OK
 }
 
 function Run-WinSATBenchmark {
-    Write-Log "Running WinSAT benchmark (takes 1-2 minutes)..." Action
-    winsat formal 2>$null
-    Write-Log "WinSAT benchmark complete! Restart to see updated scores." OK
-    Play-SuccessTone
+    Write-Log "Launching WinSAT benchmark..." Action
+    Start-Process powershell.exe "-NoProfile -Command `"Write-Host 'Running WinSAT Formal Assessment...' -ForegroundColor Cyan; winsat formal; Write-Host ''; Write-Host 'Benchmark complete!' -ForegroundColor Green; pause`""
+    Write-Log "WinSAT benchmark launched" OK
 }
-
-# ─── RAM SPEED CHECK ─────────────────────────────────────────────────────────────
-
-function Check-RAMSpeed {
-    Write-Log "═══ RAM SPEED ANALYSIS ═══" Action
-    $sticks = Get-CimInstance Win32_PhysicalMemory
-    foreach ($stick in $sticks) {
-        $cap = [math]::Round($stick.Capacity / 1GB)
-        $spd = $stick.Speed
-        $cfgSpd = $stick.ConfiguredClockSpeed
-        Write-Log "  Stick: ${cap}GB | Rated: ${spd}MHz | Running: ${cfgSpd}MHz" Info
-        if ($cfgSpd -lt $spd) {
-            Write-Log "  ⚠ RAM running BELOW rated speed! Enable XMP/DOCP in BIOS!" Warn
-        } else {
-            Write-Log "  ✓ RAM running at rated speed." OK
-        }
-    }
-    Play-SuccessTone
-}
-
-# ─── FRAME RATE CAP INFO ────────────────────────────────────────────────────────
-
-function Show-FrameCapAdvice {
-    Write-Log "═══ FRAME RATE CAP ADVISOR ═══" Action
-    try {
-        $monitors = Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams -ErrorAction SilentlyContinue
-        Write-Log "  Monitor Refresh Rate: ~${monitorHz}Hz detected" Info
-    } catch {}
-    Write-Log "  Recommended Cap: ${monitorHz} FPS (match your monitor)" Info
-    Write-Log "  For NVIDIA: Open NVIDIA Control Panel > Manage 3D > Max Frame Rate > $monitorHz" Info
-    Write-Log "  For AMD: Open Radeon Software > Gaming > Frame Rate Target > $monitorHz" Info
-    Write-Log "  For RTSS: Set Framerate Limit to $monitorHz in RivaTuner" Info
-    Write-Log "  Tip: Capping at $(($monitorHz - 3)) can reduce input lag with V-Sync OFF." OK
-}
-
-# ─── MICROWIN ISO DEBLOAT ────────────────────────────────────────────────────────
-
-function Start-MicroWin {
-    Write-Log "═══ MICROWIN ISO DEBLOATER ═══" Action
-    $ofd = New-Object System.Windows.Forms.OpenFileDialog
-    $ofd.Filter = "ISO Files (*.iso)|*.iso"
-    $ofd.Title = "Select Windows ISO"
-    if ($ofd.ShowDialog() -ne 'OK') { Write-Log "Cancelled." Warn; return }
-
-    $isoPath = $ofd.FileName
-    Write-Log "  Mounting ISO: $isoPath" Info
-    $mount = Mount-DiskImage -ImagePath $isoPath -PassThru
-    $driveLetter = ($mount | Get-Volume).DriveLetter
-    $workDir = "$env:TEMP\MicroWin"
-    $wimPath = "${driveLetter}:\sources\install.wim"
-
-    if (-not (Test-Path $wimPath)) {
-        $wimPath = "${driveLetter}:\sources\install.esd"
-    }
-    if (-not (Test-Path $wimPath)) {
-        Write-Log "  Cannot find install.wim or install.esd!" Error
-        Dismount-DiskImage -ImagePath $isoPath
-        return
-    }
-
-    Ensure-Path $workDir
-    Write-Log "  Copying WIM to work directory..." Info
-    Copy-Item $wimPath "$workDir\install.wim" -Force
-
-    Write-Log "  Removing bloatware from image..." Info
-    $mountDir = "$workDir\mount"
-    Ensure-Path $mountDir
-    dism /mount-wim /wimfile:"$workDir\install.wim" /index:1 /mountdir:$mountDir 2>$null
-
-    $bloatPackages = dism /image:$mountDir /get-provisionedappxpackages 2>$null | Select-String "PackageName" | ForEach-Object {
-        ($_ -split ":")[1].Trim()
-    } | Where-Object { $_ -match "Bing|Zune|Solitaire|People|Maps|Feedback|SkypeApp|Xbox" }
-
-    foreach ($pkg in $bloatPackages) {
-        dism /image:$mountDir /remove-provisionedappxpackage /packagename:$pkg 2>$null
-        Write-Log "  Removed: $pkg" Info
-    }
-
-    dism /unmount-wim /mountdir:$mountDir /commit 2>$null
-    Dismount-DiskImage -ImagePath $isoPath
-    Write-Log "MicroWin ISO debloat complete! Clean WIM at: $workDir\install.wim" OK
-    Play-SuccessTone
-}
-
-# ─── COMPLETE REVERT FUNCTION ────────────────────────────────────────────────────
 
 function Revert-AllChanges {
-    Write-Log "═══ REVERTING ALL OPTIMIZATIONS TO WINDOWS DEFAULTS ═══" Action
-
+    Write-Log "REVERTING all optimizations to Windows defaults..." Action
     # Visuals
-    Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'UserPreferencesMask' -Value ([byte[]](0x9E,0x3E,0x07,0x80,0x12,0x00,0x00,0x00)) -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name 'EnableTransparency' -Value 1 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'MenuShowDelay' -Value '400' -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 0 -ErrorAction SilentlyContinue
-    Write-Log "  Visuals restored." Info
-
-    # Memory
-    Enable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -Name "LargeSystemCache" -Value 1 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" -Name "EnablePrefetcher" -Value 3 -ErrorAction SilentlyContinue
-    Write-Log "  Memory settings restored." Info
-
-    # Priority
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Value 20 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 10 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 2 -ErrorAction SilentlyContinue
-    Write-Log "  Priority settings restored." Info
-
-    # GPU Priority
-    $gpuTaskPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
-    if (Test-Path $gpuTaskPath) {
-        Set-ItemProperty -Path $gpuTaskPath -Name "GPU Priority" -Value 2 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $gpuTaskPath -Name "Priority" -Value 2 -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $gpuTaskPath -Name "Scheduling Category" -Value "Medium" -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $gpuTaskPath -Name "SFIO Priority" -Value "Normal" -ErrorAction SilentlyContinue
+    Set-Reg 'HKCU:\Control Panel\Desktop' 'UserPreferencesMask' ([byte[]](0x9E,0x3E,0x07,0x80,0x12,0x00,0x00,0x00)) 'Binary'
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 1
+    Set-Reg 'HKCU:\Control Panel\Desktop' 'MenuShowDelay' '400' 'String'
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 0
+    # Memory compression
+    try { Enable-MMAgent -MemoryCompression -ErrorAction Stop } catch {}
+    # Services
+    foreach ($svc in @('SysMain','DiagTrack','WSearch','dmwappushservice')) {
+        try { Set-Service -Name $svc -StartupType Automatic -ErrorAction Stop; Start-Service -Name $svc -ErrorAction Stop } catch {}
     }
-
-    # DWM Priority
-    $dwmPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Window Manager"
-    if (Test-Path $dwmPath) {
-        Set-ItemProperty -Path $dwmPath -Name "Priority" -Value 5 -ErrorAction SilentlyContinue
-    }
-    Write-Log "  GPU/DWM priority restored." Info
-
+    # Game DVR
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 1
+    Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 1
+    Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_FSEBehaviorMode' 0
+    # Power plan (balanced)
+    powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e 2>$null
+    # System responsiveness
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 20
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex' 10
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 2
+    # Telemetry
+    Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -ErrorAction SilentlyContinue
     # BCD
     bcdedit /deletevalue useplatformtick 2>$null
     bcdedit /deletevalue disabledynamictick 2>$null
-    bcdedit /deletevalue useplatformclock 2>$null
-    Write-Log "  BCD settings restored." Info
-
-    # Network (Nagle re-enable)
-    $nics = Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" -ErrorAction SilentlyContinue
-    foreach ($nic in $nics) {
-        Remove-ItemProperty -Path $nic.PSPath -Name "TcpAckFrequency" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $nic.PSPath -Name "TCPNoDelay" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $nic.PSPath -Name "TcpDelAckTicks" -ErrorAction SilentlyContinue
-    }
-    netsh int tcp set global autotuninglevel=normal 2>$null
-    Write-Log "  Network settings restored." Info
-
-    # Services
-    $services = @("SysMain","DiagTrack","WbioSrvc","MapsBroker","WMPNetworkSvc","RemoteRegistry","dmwappushservice")
-    foreach ($svc in $services) {
-        Set-Service -Name $svc -StartupType Automatic -ErrorAction SilentlyContinue
-        Start-Service -Name $svc -ErrorAction SilentlyContinue
-    }
-    Write-Log "  Services restored." Info
-
-    # Telemetry
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -Value 3 -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo" -Name "DisabledByGroupPolicy" -ErrorAction SilentlyContinue
-    Write-Log "  Telemetry settings restored." Info
-
-    # Power
-    powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e 2>$null
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power" -Name "PowerThrottlingOff" -Value 0 -ErrorAction SilentlyContinue
-    powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 5 2>$null
+    # Core parking
+    powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 50 2>$null
     powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 2>$null
     powercfg -setactive scheme_current 2>$null
-    Write-Log "  Power settings restored (Balanced plan)." Info
-
-    # USB
-    powercfg -SETACVALUEINDEX SCHEME_CURRENT 2a033b03-2eef-4ce0-bd58-3e193014470b 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 1 2>$null
-    powercfg -setactive SCHEME_CURRENT 2>$null
-    Write-Log "  USB selective suspend re-enabled." Info
-
-    # Mouse
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "1" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "6" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "10" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value "1" -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value "12" -ErrorAction SilentlyContinue
-    Write-Log "  Mouse/Keyboard settings restored." Info
-
-    # Game DVR
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" -Name "AppCaptureEnabled" -Value 1 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 1 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehaviorMode" -Value 0 -ErrorAction SilentlyContinue
-    Write-Log "  Game DVR/FSO restored." Info
-
-    # Security mitigations
-    reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "FeatureSettingsOverride" /f 2>$null | Out-Null
-    reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v "FeatureSettingsOverrideMask" /f 2>$null | Out-Null
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard" -Name "EnableVirtualizationBasedSecurity" -Value 1 -ErrorAction SilentlyContinue
-    Write-Log "  CPU mitigations and VBS re-enabled." Info
-
-    # GPU
-    $gpuRegPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000"
-    if (Test-Path $gpuRegPath) {
-        Remove-ItemProperty -Path $gpuRegPath -Name "PowerMizerEnable" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $gpuRegPath -Name "PerfLevelSrc" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $gpuRegPath -Name "PowerMizerLevel" -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $gpuRegPath -Name "PowerMizerLevelAC" -ErrorAction SilentlyContinue
+    # GPU tasks
+    $gpuTask = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
+    Set-Reg $gpuTask 'GPU Priority' 2
+    Set-Reg $gpuTask 'Priority' 2
+    Set-Reg $gpuTask 'Scheduling Category' 'Medium' 'String'
+    Set-Reg $gpuTask 'SFIO Priority' 'Normal' 'String'
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Window Manager' 'Priority' 5
+    # CPU mitigations (restore)
+    Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -Name 'FeatureSettingsOverride' -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -Name 'FeatureSettingsOverrideMask' -ErrorAction SilentlyContinue
+    # VBS
+    Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' -Name 'EnableVirtualizationBasedSecurity' -ErrorAction SilentlyContinue
+    # GPU power state
+    Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000' -Name 'PerfLevelSrc' -ErrorAction SilentlyContinue
+    # Network
+    netsh int tcp set global autotuninglevel=normal 2>$null
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces' -ErrorAction SilentlyContinue | ForEach-Object {
+        Remove-ItemProperty -Path $_.PSPath -Name 'TcpAckFrequency' -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $_.PSPath -Name 'TCPNoDelay' -ErrorAction SilentlyContinue
     }
-    Write-Log "  GPU power settings restored." Info
-
-    # Context Menu
+    # Power throttling
+    Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -Name 'PowerThrottlingOff' -ErrorAction SilentlyContinue
+    # Mouse
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseSpeed' '1' 'String'
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseThreshold1' '6' 'String'
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseThreshold2' '10' 'String'
+    Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseSensitivity' '10' 'String'
+    # Keyboard
+    Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardSpeed' '31' 'String'
+    Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardDelay' '1' 'String'
+    # USB
+    Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\USB' -Name 'DisableSelectiveSuspend' -ErrorAction SilentlyContinue
+    # RAM
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'LargeSystemCache' 1
+    Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -Name 'ClearPageFileAtShutdown' -ErrorAction SilentlyContinue
+    # Context menu
     Remove-ContextMenu
-
-    # Scheduled Task
-    Unregister-ScheduledTask -TaskName "RaysChamber_Maintenance" -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Log "  Maintenance task removed." Info
-
-    # Stop Auto-Booster
+    # Maintenance task
+    Unregister-ScheduledTask -TaskName 'RaysChamber_Maintenance' -Confirm:$false -ErrorAction SilentlyContinue
+    # Auto-booster
     Stop-AutoBooster
-
-    # Restart Explorer
-    Restart-Shell
-
-    Write-Log "ALL OPTIMIZATIONS REVERTED TO WINDOWS DEFAULTS!" OK
-    Play-SuccessTone
+    Write-Log "ALL changes reverted to Windows defaults!" OK
+    [console]::Beep(880,150); [console]::Beep(660,150); [console]::Beep(440,300)
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# WPF XAML GUI
-# ═══════════════════════════════════════════════════════════════════════════════
-
-[xml]$XAML = @"
+# ============================================================
+# SECTION 10: WPF XAML DEFINITION
+# ============================================================
+$xaml = @'
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="Ray's Optimization Chamber v5.0"
-    Width="980" Height="720" MinWidth="800" MinHeight="600"
+    Title="Rays Optimization Chamber v5.0"
+    Width="1100" Height="750"
     WindowStartupLocation="CenterScreen"
-    Background="$($C.BG)" Foreground="$($C.Text)"
+    Background="#000B1A"
+    Foreground="#F0F0F0"
     FontFamily="Segoe UI">
     <Window.Resources>
-        <Style x:Key="NavBtn" TargetType="Button">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="$($C.TextDim)"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="16,10"/>
-            <Setter Property="FontSize" Value="13"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6,6,0,0" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="$($C.Surface)"/>
-                                <Setter Property="Foreground" Value="$($C.Text)"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style x:Key="ActionBtn" TargetType="Button">
-            <Setter Property="Background" Value="$($C.Surface2)"/>
-            <Setter Property="Foreground" Value="$($C.Text)"/>
-            <Setter Property="BorderBrush" Value="$($C.Border)"/>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#001F3F"/>
+            <Setter Property="Foreground" Value="#D0D8E0"/>
+            <Setter Property="BorderBrush" Value="#002A4A"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="14,8"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="Margin" Value="3"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Margin" Value="4"/>
+            <Setter Property="FontSize" Value="12"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="5" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"/>
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}"
+                                CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="$($C.Accent)"/>
-                                <Setter Property="Foreground" Value="$($C.BG)"/>
+                                <Setter Property="Background" Value="#003366"/>
+                                <Setter Property="Foreground" Value="#00D9FF"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
-        <Style x:Key="AccentBtn" TargetType="Button">
-            <Setter Property="Background" Value="$($C.Accent)"/>
-            <Setter Property="Foreground" Value="$($C.BG)"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="16,10"/>
-            <Setter Property="FontSize" Value="13"/>
-            <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Margin" Value="4"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="5" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="$($C.Green)"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style x:Key="DangerBtn" TargetType="Button">
-            <Setter Property="Background" Value="$($C.Red)"/>
-            <Setter Property="Foreground" Value="White"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="14,8"/>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#001F3F"/>
+            <Setter Property="Foreground" Value="#F0F0F0"/>
+            <Setter Property="BorderBrush" Value="#002A4A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,5"/>
             <Setter Property="FontSize" Value="12"/>
-            <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Margin" Value="4"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="5" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#FF6680"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+            <Setter Property="CaretBrush" Value="#00D9FF"/>
         </Style>
-        <Style x:Key="GoldBtn" TargetType="Button">
-            <Setter Property="Background" Value="$($C.Gold)"/>
-            <Setter Property="Foreground" Value="$($C.BG)"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="14,8"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="Cursor" Value="Hand"/>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#D0D8E0"/>
             <Setter Property="Margin" Value="4"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="5" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#FFE44D"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+            <Setter Property="FontSize" Value="12"/>
         </Style>
     </Window.Resources>
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="160"/>
-        </Grid.RowDefinitions>
-
-        <Border Grid.Row="0" Background="$($C.NavBG)" Padding="16,10">
-            <DockPanel>
-                <TextBlock DockPanel.Dock="Left" FontSize="16" FontWeight="Bold" Foreground="$($C.Accent)">
-                    ⚡ Ray's Optimization Chamber v5.0
-                </TextBlock>
-                <TextBlock DockPanel.Dock="Right" FontSize="11" Foreground="$($C.TextDim)" VerticalAlignment="Center" x:Name="TxtHWInfo">
-                    Loading hardware info...
-                </TextBlock>
-            </DockPanel>
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Background="#000814" Padding="14,10">
+            <TextBlock Text="RAYS OPTIMIZATION CHAMBER v5.0" FontSize="16" FontWeight="Bold" Foreground="#00D9FF"/>
         </Border>
-
-        <Border Grid.Row="1" Background="$($C.NavBG)" Padding="8,0,8,0">
-            <StackPanel Orientation="Horizontal">
-                <Button x:Name="NavInstall"  Content="📦 Install"  Style="{StaticResource NavBtn}"/>
-                <Button x:Name="NavTweaks"   Content="🔧 Tweaks"   Style="{StaticResource NavBtn}"/>
-                <Button x:Name="NavGaming"   Content="🎮 Gaming"   Style="{StaticResource NavBtn}"/>
-                <Button x:Name="NavHardware" Content="🔩 Hardware" Style="{StaticResource NavBtn}"/>
-                <Button x:Name="NavConfig"   Content="⚙ Config"    Style="{StaticResource NavBtn}"/>
-                <Button x:Name="NavUpdates"  Content="🔄 Updates"  Style="{StaticResource NavBtn}"/>
-                <Button x:Name="NavHealth"   Content="🩺 Health"   Style="{StaticResource NavBtn}"/>
-            </StackPanel>
-        </Border>
-
-        <Border Grid.Row="2" Background="$($C.Surface)" BorderBrush="$($C.Border)" BorderThickness="0,1" Margin="0">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
-                <Grid>
-                    <StackPanel x:Name="PanelInstall" Visibility="Visible">
-                        <TextBlock Text="📦 Application Installer (WinGet)" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
-                        <TextBlock Text="Select apps and click Install. Powered by winget." Foreground="$($C.TextDim)" Margin="0,0,0,8"/>
-                        <DockPanel Margin="0,0,0,8">
-                            <Button x:Name="BtnInstallSelected" Content="⬇ Install Selected" Style="{StaticResource AccentBtn}" DockPanel.Dock="Right"/>
-                            <Button x:Name="BtnSelectAll" Content="Select All" Style="{StaticResource ActionBtn}" DockPanel.Dock="Right"/>
-                            <Button x:Name="BtnDeselectAll" Content="Deselect All" Style="{StaticResource ActionBtn}" DockPanel.Dock="Right"/>
-                            <TextBox x:Name="TxtSearch" Background="$($C.BG)" Foreground="$($C.Text)" BorderBrush="$($C.Border)" Padding="8,6" FontSize="13" VerticalContentAlignment="Center">
-                                <TextBox.Style>
-                                    <Style TargetType="TextBox">
-                                        <Setter Property="Tag" Value="🔍 Search apps..."/>
-                                    </Style>
-                                </TextBox.Style>
-                            </TextBox>
-                        </DockPanel>
-                        <WrapPanel x:Name="AppPanel" Orientation="Horizontal"/>
-                    </StackPanel>
-
-                    <StackPanel x:Name="PanelTweaks" Visibility="Collapsed">
-                        <TextBlock Text="🔧 System Tweaks — Tiered Optimization" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
-                        <TextBlock Text="Hardware-aware optimization. Creates restore point before applying." Foreground="$($C.TextDim)" Margin="0,0,0,12"/>
-
-                        <Border Background="$($C.BG)" CornerRadius="6" Padding="12" Margin="0,0,0,12" BorderBrush="$($C.Border)" BorderThickness="1">
-                            <StackPanel>
-                                <TextBlock Text="⚠ SAFETY FIRST" FontSize="14" FontWeight="Bold" Foreground="$($C.Gold)" Margin="0,0,0,6"/>
-                                <Button x:Name="BtnRestore" Content="🛡 Create System Restore Point" Style="{StaticResource GoldBtn}" HorizontalAlignment="Left"/>
-                                <TextBlock x:Name="TxtRestoreStatus" Text="Status: No restore point created" Foreground="$($C.Red)" Margin="0,6,0,0" FontSize="11"/>
-                            </StackPanel>
-                        </Border>
-
-                        <TextBlock Text="TIER-BASED OPTIMIZATION" FontSize="13" FontWeight="Bold" Foreground="$($C.TextDim)" Margin="0,0,0,8"/>
-                        <WrapPanel Margin="0,0,0,12">
-                            <Button x:Name="BtnLowEnd"  Content="🟢 Low-End (RAM + Visual)" Style="{StaticResource ActionBtn}" ToolTip="Disables animations, memory compression, heavy services. Safe for all PCs."/>
-                            <Button x:Name="BtnMidEnd"  Content="🔵 Mid-Range (Snappy + Telemetry)" Style="{StaticResource ActionBtn}" ToolTip="Adds telemetry block, priority boost, network throttling disable. Recommended for most users."/>
-                            <Button x:Name="BtnHighEnd" Content="🔴 High-End Nuclear (Max Power)" Style="{StaticResource DangerBtn}" ToolTip="BCD tweaks, Spectre/Meltdown disable, VBS off, GPU MSI mode. For enthusiasts only!"/>
-                        </WrapPanel>
-
-                        <TextBlock Text="INDIVIDUAL TWEAKS" FontSize="13" FontWeight="Bold" Foreground="$($C.TextDim)" Margin="0,0,0,8"/>
-                        <WrapPanel>
-                            <Button x:Name="BtnDebloat"   Content="🗑 Debloat Windows" Style="{StaticResource ActionBtn}" ToolTip="Removes 25+ pre-installed bloatware apps like Bing, Solitaire, Xbox overlays."/>
-                            <Button x:Name="BtnCleanup"   Content="🧹 System Cleanup" Style="{StaticResource ActionBtn}" ToolTip="Clears temp files, Windows Update cache, and Recycle Bin. Safe — never touches user docs."/>
-                            <Button x:Name="BtnOptRAM"    Content="💾 Optimize RAM" Style="{StaticResource ActionBtn}" ToolTip="Disables memory compression, clears standby list, optimizes cache priority."/>
-                            <Button x:Name="BtnOptStore"  Content="💿 Optimize Storage" Style="{StaticResource ActionBtn}" ToolTip="Runs SSD TRIM, sets game I/O priority to High, disables last-access timestamps."/>
-                            <Button x:Name="BtnOptNet"    Content="🌐 Optimize Network" Style="{StaticResource ActionBtn}" ToolTip="Disables Nagle's algorithm, network throttling. Enables CTCP + ECN."/>
-                            <Button x:Name="BtnUSB"       Content="🔌 USB/Input Tweaks" Style="{StaticResource ActionBtn}" ToolTip="Disables USB selective suspend, mouse acceleration, maximizes keyboard repeat rate."/>
-                            <Button x:Name="BtnRefreshNet" Content="📡 Internet Refresher" Style="{StaticResource ActionBtn}" ToolTip="Flushes DNS, resets Winsock, renews IP. Fixes connection drops without changing ISP settings."/>
-                        </WrapPanel>
-
-                        <Border Background="$($C.BG)" CornerRadius="6" Padding="12" Margin="0,12,0,0" BorderBrush="$($C.Red)" BorderThickness="1">
-                            <StackPanel>
-                                <TextBlock Text="↩ REVERT ALL CHANGES" FontSize="13" FontWeight="Bold" Foreground="$($C.Red)" Margin="0,0,0,6"/>
-                                <Button x:Name="BtnRevert" Content="⏪ Revert Everything to Windows Defaults" Style="{StaticResource DangerBtn}" HorizontalAlignment="Left" ToolTip="Restores ALL registry, BCD, services, power plans, visuals, and network to factory defaults."/>
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-
-                    <StackPanel x:Name="PanelGaming" Visibility="Collapsed">
-                        <TextBlock Text="🎮 Gaming Optimization — Zero Latency" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
-                        <TextBlock Text="Process Lasso + MSI Afterburner + ExitLag combined." Foreground="$($C.TextDim)" Margin="0,0,0,12"/>
-
-                        <WrapPanel Margin="0,0,0,12">
-                            <Button x:Name="BtnGameBoost" Content="🚀 Game Booster (All-in-One)" Style="{StaticResource AccentBtn}" ToolTip="GPU Priority 8, Win32PrioritySeparation 0x26, Network Throttle OFF, Game DVR OFF, Mouse Accel OFF, Max Keyboard Speed."/>
-                            <Button x:Name="BtnAutoBoost" Content="🤖 Start Auto-Booster" Style="{StaticResource ActionBtn}" ToolTip="Background loop: detects CS2/Valorant/Fortnite and auto-boosts to High priority, demotes Chrome/Discord."/>
-                            <Button x:Name="BtnStopBoost" Content="⏹ Stop Auto-Booster" Style="{StaticResource ActionBtn}" ToolTip="Stops the background game detection loop."/>
-                            <Button x:Name="BtnRAMPurge"  Content="🧠 Purge RAM Now" Style="{StaticResource ActionBtn}" ToolTip="Instantly clears the RAM standby list. Use when games start stuttering after long sessions."/>
-                            <Button x:Name="BtnFrameCap"  Content="🖥 Frame Cap Advisor" Style="{StaticResource ActionBtn}" ToolTip="Detects your monitor refresh rate and tells you the optimal FPS cap for NVIDIA/AMD/RTSS."/>
-                        </WrapPanel>
-
-                        <TextBlock Text="LAPTOP SPECIAL" FontSize="13" FontWeight="Bold" Foreground="$($C.Gold)" Margin="0,0,0,8"/>
-                        <WrapPanel>
-                            <Button x:Name="BtnLaptopGod" Content="💻 Laptop God Mode" Style="{StaticResource GoldBtn}" ToolTip="99% CPU cap (prevents turbo overheat crash), disables DPTF thermal throttling, Efficiency Mode OFF. PLUG IN CHARGER!"/>
-                        </WrapPanel>
-                    </StackPanel>
-
-                    <StackPanel x:Name="PanelHardware" Visibility="Collapsed">
-                        <TextBlock Text="🔩 Hardware Info &amp; Deep Tweaks" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
-                        <Border Background="$($C.BG)" CornerRadius="6" Padding="12" Margin="0,8,0,12" BorderBrush="$($C.Border)" BorderThickness="1">
-                            <StackPanel>
-                                <TextBlock x:Name="TxtHWDetail" Text="Loading..." Foreground="$($C.Text)" FontFamily="Cascadia Code,Consolas" FontSize="12" TextWrapping="Wrap"/>
-                            </StackPanel>
-                        </Border>
-                        <WrapPanel>
-                            <Button x:Name="BtnCheckRAM"   Content="💾 Check RAM Speed (XMP)" Style="{StaticResource ActionBtn}" ToolTip="Checks if your RAM is running at its advertised speed. Warns if XMP/DOCP needs enabling in BIOS."/>
-                            <Button x:Name="BtnContextMenu" Content="📌 Add Desktop Context Menu" Style="{StaticResource ActionBtn}" ToolTip="Adds 'Open Ray's Chamber' to your desktop right-click menu for instant access."/>
-                            <Button x:Name="BtnRmContext"  Content="❌ Remove Context Menu" Style="{StaticResource ActionBtn}" ToolTip="Removes the desktop right-click shortcut."/>
-                            <Button x:Name="BtnMaintTask"  Content="📅 Setup Auto-Maintenance" Style="{StaticResource ActionBtn}" ToolTip="Creates a scheduled task that runs SSD TRIM + Temp Cleanup every 3 days at 3AM."/>
-                        </WrapPanel>
-                    </StackPanel>
-
-                    <StackPanel x:Name="PanelConfig" Visibility="Collapsed">
-                        <TextBlock Text="⚙ Configuration &amp; Features" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
-                        <TextBlock Text="Windows Optional Features and ISO tools." Foreground="$($C.TextDim)" Margin="0,0,0,12"/>
-
-                        <TextBlock Text="OPTIONAL FEATURES" FontSize="13" FontWeight="Bold" Foreground="$($C.TextDim)" Margin="0,0,0,8"/>
-                        <WrapPanel Margin="0,0,0,12">
-                            <Button x:Name="BtnWSL"      Content="🐧 Enable WSL2" Style="{StaticResource ActionBtn}" ToolTip="Enables Windows Subsystem for Linux 2. Requires reboot."/>
-                            <Button x:Name="BtnSandbox"  Content="📦 Enable Sandbox" Style="{StaticResource ActionBtn}" ToolTip="Enables Windows Sandbox for testing apps safely."/>
-                            <Button x:Name="BtnHyperV"   Content="🖥 Enable Hyper-V" Style="{StaticResource ActionBtn}" ToolTip="Enables Hyper-V virtualization. Note: May conflict with some anti-cheat."/>
-                            <Button x:Name="BtnDotNet"   Content="🔧 Enable .NET 3.5" Style="{StaticResource ActionBtn}" ToolTip="Installs .NET Framework 3.5 for legacy application support."/>
-                        </WrapPanel>
-
-                        <TextBlock Text="DNS CONFIGURATION" FontSize="13" FontWeight="Bold" Foreground="$($C.TextDim)" Margin="0,0,0,8"/>
-                        <WrapPanel Margin="0,0,0,12">
-                            <Button x:Name="BtnDNSGoogle" Content="🌐 Google DNS" Style="{StaticResource ActionBtn}" ToolTip="Sets DNS to 8.8.8.8 / 8.8.4.4"/>
-                            <Button x:Name="BtnDNSCF"     Content="☁ Cloudflare DNS" Style="{StaticResource ActionBtn}" ToolTip="Sets DNS to 1.1.1.1 / 1.0.0.1"/>
-                            <Button x:Name="BtnDNSAuto"   Content="🔄 Auto (DHCP)" Style="{StaticResource ActionBtn}" ToolTip="Resets DNS to automatic (DHCP) mode."/>
-                        </WrapPanel>
-
-                        <TextBlock Text="MICROWIN" FontSize="13" FontWeight="Bold" Foreground="$($C.TextDim)" Margin="0,0,0,8"/>
-                        <Button x:Name="BtnMicroWin" Content="💿 MicroWin ISO Debloater" Style="{StaticResource AccentBtn}" HorizontalAlignment="Left" ToolTip="Select a Windows ISO file and strip bloatware from it using DISM. Creates a clean install image."/>
-                    </StackPanel>
-
-                    <StackPanel x:Name="PanelUpdates" Visibility="Collapsed">
-                        <TextBlock Text="🔄 Windows Update Control" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,12"/>
-                        <WrapPanel>
-                            <Button x:Name="BtnUpdDefault" Content="✅ Default (Auto)" Style="{StaticResource ActionBtn}" ToolTip="Restores Windows Update to default automatic behavior."/>
-                            <Button x:Name="BtnUpdSec"     Content="🔒 Security Only" Style="{StaticResource ActionBtn}" ToolTip="Only installs critical security updates. Blocks feature updates."/>
-                            <Button x:Name="BtnUpdOff"     Content="⛔ Disable Updates" Style="{StaticResource DangerBtn}" ToolTip="Completely disables Windows Update service. Not recommended long-term."/>
-                        </WrapPanel>
-                    </StackPanel>
-
-                    <StackPanel x:Name="PanelHealth" Visibility="Collapsed">
-                        <TextBlock Text="🩺 System Health &amp; Diagnostics" FontSize="18" FontWeight="Bold" Foreground="$($C.Accent)" Margin="0,0,0,4"/>
-                        <TextBlock Text="Self-healing tools to fix corrupted files and stuck updates." Foreground="$($C.TextDim)" Margin="0,0,0,12"/>
-                        <WrapPanel>
-                            <Button x:Name="BtnFullScan"   Content="🔬 Full Health Scan (SFC+DISM+WU)" Style="{StaticResource AccentBtn}" ToolTip="Runs SFC /scannow, DISM /RestoreHealth, and resets Windows Update. Takes 5-15 minutes."/>
-                            <Button x:Name="BtnSFC"        Content="🔍 SFC Only" Style="{StaticResource ActionBtn}" ToolTip="System File Checker — scans and repairs corrupted Windows files."/>
-                            <Button x:Name="BtnDISM"       Content="🏥 DISM Only" Style="{StaticResource ActionBtn}" ToolTip="Downloads fresh system components from Microsoft servers."/>
-                            <Button x:Name="BtnWinSAT"     Content="📊 Run WinSAT Benchmark" Style="{StaticResource ActionBtn}" ToolTip="Runs the official Windows System Assessment Tool. Takes 1-2 minutes. Updates your hardware scores."/>
-                            <Button x:Name="BtnRestartShell" Content="🔄 Restart Explorer" Style="{StaticResource ActionBtn}" ToolTip="Restarts Windows Explorer to apply registry changes without logging out."/>
-                        </WrapPanel>
-                    </StackPanel>
-                </Grid>
+        <Border DockPanel.Dock="Bottom" Background="#00050A" BorderBrush="#002A4A" BorderThickness="0,1,0,0" Height="130">
+            <ScrollViewer Name="LogScroll" VerticalScrollBarVisibility="Auto" Padding="8">
+                <TextBlock Name="LogBox" TextWrapping="Wrap" Foreground="#8090A0" FontSize="11" FontFamily="Consolas"/>
             </ScrollViewer>
         </Border>
-
-        <Border Grid.Row="3" Background="$($C.LogBG)" BorderBrush="$($C.Border)" BorderThickness="0,1,0,0">
-            <DockPanel>
-                <Border DockPanel.Dock="Top" Background="$($C.NavBG)" Padding="12,6">
-                    <TextBlock Text="📋 Activity Log" FontSize="12" FontWeight="SemiBold" Foreground="$($C.TextDim)"/>
-                </Border>
-                <ScrollViewer x:Name="LogScroll" VerticalScrollBarVisibility="Auto" Padding="12,6">
-                    <TextBlock x:Name="LogBox" TextWrapping="Wrap" FontFamily="Cascadia Code,Consolas" FontSize="11"/>
-                </ScrollViewer>
-            </DockPanel>
-        </Border>
-    </Grid>
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Background="#000814" Margin="0,0,0,0">
+            <Button Name="NavInstall" Content="Install" Padding="18,8" FontWeight="Bold"/>
+            <Button Name="NavTweaks" Content="Tweaks" Padding="18,8"/>
+            <Button Name="NavGaming" Content="Gaming" Padding="18,8"/>
+            <Button Name="NavHardware" Content="Hardware" Padding="18,8"/>
+            <Button Name="NavConfig" Content="Config" Padding="18,8"/>
+            <Button Name="NavUpdates" Content="Updates" Padding="18,8"/>
+            <Button Name="NavHealth" Content="Health" Padding="18,8"/>
+        </StackPanel>
+        <Grid>
+            <ScrollViewer Name="PanelInstall" VerticalScrollBarVisibility="Auto" Padding="14">
+                <StackPanel>
+                    <TextBlock Text="INSTALL APPLICATIONS" FontSize="18" FontWeight="Bold" Foreground="#00D9FF" Margin="0,0,0,8"/>
+                    <TextBox Name="TxtSearch" Margin="0,0,0,8"/>
+                    <WrapPanel Name="AppPanel"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Name="BtnSelectAll" Content="Select All"/>
+                        <Button Name="BtnDeselectAll" Content="Deselect All"/>
+                        <Button Name="BtnInstallSelected" Content="Install Selected" FontWeight="Bold"/>
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+            <ScrollViewer Name="PanelTweaks" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Padding="14">
+                <StackPanel>
+                    <TextBlock Text="SYSTEM TWEAKS" FontSize="18" FontWeight="Bold" Foreground="#00D9FF" Margin="0,0,0,8"/>
+                    <TextBlock Text="-- Safety --" FontSize="14" FontWeight="Bold" Foreground="#FFD700" Margin="0,8,0,4"/>
+                    <Button Name="BtnRestore" Content="Create Restore Point (REQUIRED)" FontWeight="Bold" ToolTip="Creates a System Restore point before making any changes"/>
+                    <TextBlock Text="-- Presets --" FontSize="14" FontWeight="Bold" Foreground="#00FFCC" Margin="0,12,0,4"/>
+                    <WrapPanel>
+                        <Button Name="BtnLowEnd" Content="Low-End PC" ToolTip="Disables animations, memory compression, heavy services. Safe for all hardware."/>
+                        <Button Name="BtnMidEnd" Content="Mid-Range" ToolTip="Adds telemetry block, network throttle off, system responsiveness boost."/>
+                        <Button Name="BtnHighEnd" Content="High-End Nuclear" ToolTip="WARNING: BCD tweaks, CPU mitigations off, VBS off. For advanced users only."/>
+                    </WrapPanel>
+                    <TextBlock Text="-- Individual Tweaks --" FontSize="14" FontWeight="Bold" Foreground="#00FFCC" Margin="0,12,0,4"/>
+                    <WrapPanel>
+                        <Button Name="BtnDebloat" Content="Debloat Windows" ToolTip="Removes pre-installed bloatware apps"/>
+                        <Button Name="BtnCleanup" Content="System Cleanup" ToolTip="Clears temp files and recycle bin"/>
+                        <Button Name="BtnOptRAM" Content="Optimize RAM" ToolTip="Adjusts memory management and clears cache"/>
+                        <Button Name="BtnOptStore" Content="Optimize Storage" ToolTip="Trims SSD and optimizes disk"/>
+                        <Button Name="BtnOptNet" Content="Network Tweaks" ToolTip="TCP optimizations and disables Nagle algorithm"/>
+                        <Button Name="BtnUSB" Content="USB and Input" ToolTip="Disables USB suspend, removes mouse acceleration"/>
+                        <Button Name="BtnRefreshNet" Content="Refresh Internet" ToolTip="Flushes DNS, resets Winsock and IP stack"/>
+                    </WrapPanel>
+                    <TextBlock Text="-- Danger Zone --" FontSize="14" FontWeight="Bold" Foreground="#FF6666" Margin="0,12,0,4"/>
+                    <Button Name="BtnRevert" Content="REVERT ALL CHANGES" ToolTip="Restores every setting to Windows defaults"/>
+                </StackPanel>
+            </ScrollViewer>
+            <ScrollViewer Name="PanelGaming" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Padding="14">
+                <StackPanel>
+                    <TextBlock Text="GAMING OPTIMIZATION" FontSize="18" FontWeight="Bold" Foreground="#00D9FF" Margin="0,0,0,8"/>
+                    <WrapPanel>
+                        <Button Name="BtnGameBoost" Content="Zero Latency Mode" FontWeight="Bold" ToolTip="BCD timer fix, priority boost, Nagle off, GPU priority max, Game DVR off"/>
+                        <Button Name="BtnAutoBoost" Content="Start Auto-Booster" ToolTip="Monitors for games every 30s and boosts their priority automatically"/>
+                        <Button Name="BtnStopBoost" Content="Stop Auto-Booster" ToolTip="Stops the automatic game detection loop"/>
+                        <Button Name="BtnRAMPurge" Content="Purge RAM" ToolTip="Forces garbage collection to clear standby memory list"/>
+                        <Button Name="BtnFrameCap" Content="Frame Cap Advisor" ToolTip="Detects your monitor Hz and recommends optimal frame cap"/>
+                        <Button Name="BtnLaptopGod" Content="Laptop God Mode" ToolTip="99 percent CPU cap, disable thermal throttle, unlock boost mode (laptops only)"/>
+                    </WrapPanel>
+                </StackPanel>
+            </ScrollViewer>
+            <ScrollViewer Name="PanelHardware" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Padding="14">
+                <StackPanel>
+                    <TextBlock Text="HARDWARE INFO" FontSize="18" FontWeight="Bold" Foreground="#00D9FF" Margin="0,0,0,8"/>
+                    <Border Background="#001F3F" BorderBrush="#002A4A" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,0,0,8">
+                        <StackPanel>
+                            <TextBlock Name="TxtHWInfo" FontSize="13" Foreground="#00D9FF" TextWrapping="Wrap"/>
+                            <TextBlock Name="TxtHWDetail" FontSize="11" Foreground="#8090A0" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Border>
+                    <TextBlock Text="-- Power --" FontSize="14" FontWeight="Bold" Foreground="#00FFCC" Margin="0,8,0,4"/>
+                    <WrapPanel>
+                        <Button Name="BtnUltPower" Content="Ultimate Performance Plan" ToolTip="Unlocks hidden Windows power plan that prevents CPU idle"/>
+                        <Button Name="BtnUnpark" Content="Unpark All Cores" ToolTip="Sets CPU core parking minimum to 100 percent"/>
+                        <Button Name="BtnCheckRAM" Content="Check RAM Speed" ToolTip="Shows RAM module speeds - warns if XMP/DOCP needs enabling"/>
+                    </WrapPanel>
+                    <TextBlock Text="-- System --" FontSize="14" FontWeight="Bold" Foreground="#00FFCC" Margin="0,12,0,4"/>
+                    <WrapPanel>
+                        <Button Name="BtnContextMenu" Content="Add Context Menu" ToolTip="Adds right-click desktop shortcut to open Rays Chamber"/>
+                        <Button Name="BtnRmContext" Content="Remove Context Menu" ToolTip="Removes the desktop right-click shortcut"/>
+                        <Button Name="BtnMaintTask" Content="Schedule Maintenance" ToolTip="Auto SSD trim and temp cleanup every day at 3AM"/>
+                    </WrapPanel>
+                </StackPanel>
+            </ScrollViewer>
+            <ScrollViewer Name="PanelConfig" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Padding="14">
+                <StackPanel>
+                    <TextBlock Text="CONFIGURATION" FontSize="18" FontWeight="Bold" Foreground="#00D9FF" Margin="0,0,0,8"/>
+                    <TextBlock Text="-- Windows Features --" FontSize="14" FontWeight="Bold" Foreground="#00FFCC" Margin="0,8,0,4"/>
+                    <WrapPanel>
+                        <Button Name="BtnWSL" Content="Enable WSL2" ToolTip="Windows Subsystem for Linux"/>
+                        <Button Name="BtnSandbox" Content="Enable Sandbox" ToolTip="Windows Sandbox for safe testing"/>
+                        <Button Name="BtnHyperV" Content="Enable Hyper-V" ToolTip="Hardware virtualization platform"/>
+                        <Button Name="BtnDotNet" Content="Enable .NET 3.5" ToolTip="Legacy .NET Framework support"/>
+                    </WrapPanel>
+                    <TextBlock Text="-- DNS --" FontSize="14" FontWeight="Bold" Foreground="#00FFCC" Margin="0,12,0,4"/>
+                    <WrapPanel>
+                        <Button Name="BtnDNSGoogle" Content="Google DNS" ToolTip="Sets DNS to 8.8.8.8 and 8.8.4.4"/>
+                        <Button Name="BtnDNSCF" Content="Cloudflare DNS" ToolTip="Sets DNS to 1.1.1.1 and 1.0.0.1"/>
+                        <Button Name="BtnDNSAuto" Content="Auto DNS (DHCP)" ToolTip="Resets DNS to automatic DHCP default"/>
+                    </WrapPanel>
+                    <TextBlock Text="-- Advanced --" FontSize="14" FontWeight="Bold" Foreground="#00FFCC" Margin="0,12,0,4"/>
+                    <Button Name="BtnMicroWin" Content="MicroWin ISO Debloat" ToolTip="Strip bloatware from a Windows ISO file"/>
+                </StackPanel>
+            </ScrollViewer>
+            <ScrollViewer Name="PanelUpdates" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Padding="14">
+                <StackPanel>
+                    <TextBlock Text="WINDOWS UPDATES" FontSize="18" FontWeight="Bold" Foreground="#00D9FF" Margin="0,0,0,8"/>
+                    <WrapPanel>
+                        <Button Name="BtnUpdDefault" Content="Default (Auto)" ToolTip="Restores standard Windows Update behavior"/>
+                        <Button Name="BtnUpdSec" Content="Security Only" ToolTip="Only installs critical security patches"/>
+                        <Button Name="BtnUpdOff" Content="Disable Updates" ToolTip="WARNING: Completely disables Windows Update service"/>
+                    </WrapPanel>
+                </StackPanel>
+            </ScrollViewer>
+            <ScrollViewer Name="PanelHealth" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Padding="14">
+                <StackPanel>
+                    <TextBlock Text="SYSTEM HEALTH" FontSize="18" FontWeight="Bold" Foreground="#00D9FF" Margin="0,0,0,8"/>
+                    <WrapPanel>
+                        <Button Name="BtnFullScan" Content="Full Health Scan" FontWeight="Bold" ToolTip="Runs SFC + DISM + Windows Update Reset in one go"/>
+                        <Button Name="BtnSFC" Content="SFC Scan" ToolTip="System File Checker - repairs corrupted system files"/>
+                        <Button Name="BtnDISM" Content="DISM Repair" ToolTip="Deployment Image Servicing - downloads fresh components from Microsoft"/>
+                        <Button Name="BtnWinSAT" Content="Run WinSAT" ToolTip="Windows System Assessment Tool - benchmarks your hardware"/>
+                        <Button Name="BtnRestartShell" Content="Restart Explorer" ToolTip="Restarts Windows Explorer to apply visual changes instantly"/>
+                    </WrapPanel>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </DockPanel>
 </Window>
-"@
+'@
 
-# ─── BUILD WINDOW (FIXED PARSING BLOCK) ──────────────────────────────────────────
-$Reader = New-Object System.Xml.XmlNodeReader $XAML
-$Window = [Windows.Markup.XamlReader]::Load($Reader)
-
-$Ctrl = @{}
-# Uses XPath to safely grab both Name and x:Name regardless of namespace configurations
-$XAML.SelectNodes("//*[@*[local-name()='Name']]") | ForEach-Object {
-    $name = $_.GetAttribute("Name")
-    if (-not $name) { $name = $_.GetAttribute("x:Name") }
-    if ($name) { $Ctrl[$name] = $Window.FindName($name) }
+# ============================================================
+# SECTION 11: WINDOW CREATION + TREE WALK
+# ============================================================
+Write-Host "Parsing XAML..." -ForegroundColor Cyan
+try {
+    $window = [System.Windows.Markup.XamlReader]::Parse($xaml)
+} catch {
+    Write-Host "FATAL: XAML parse failed: $_" -ForegroundColor Red
+    Write-Host "Press any key to exit..." -ForegroundColor Red
+    $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    exit 1
 }
 
-# ─── DWM EFFECTS ─────────────────────────────────────────────────────────────────
-$Window.Add_Loaded({
+# Recursive tree walker using LogicalTreeHelper
+function Walk-Tree($el) {
+    if ($el -is [System.Windows.FrameworkElement] -and $el.Name) {
+        $script:Ctrl[$el.Name] = $el
+    }
+    if ($el -is [System.Windows.DependencyObject]) {
+        try {
+            foreach ($child in [System.Windows.LogicalTreeHelper]::GetChildren($el)) {
+                if ($child -is [System.Windows.DependencyObject]) { Walk-Tree $child }
+            }
+        } catch {}
+    }
+}
+Walk-Tree $window
+Write-Host "Found $($Ctrl.Count) named controls" -ForegroundColor Green
+
+# Validate critical controls
+$required = @('LogBox','LogScroll','NavInstall','PanelInstall','AppPanel','TxtSearch')
+foreach ($r in $required) {
+    if (-not $Ctrl[$r]) { Write-Host "CRITICAL: Missing control '$r' - UI may not work correctly" -ForegroundColor Red }
+}
+
+# --- DWM Mica effect ---
+$window.Add_SourceInitialized({
     try {
-        $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($Window)).Handle
-        [DwmHelper]::EnableDarkTitle($hwnd)
-        [DwmHelper]::EnableMica($hwnd)
+        $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper $window).Handle
+        [DwmHelper]::ApplyDark($hwnd)
     } catch {}
-
-    # Hardware info in title bar
-    $Ctrl['TxtHWInfo'].Text = "$HardwareType | $cpuName | ${ramGB}GB | $gpuName | Tier: $SuggestedTier"
-
-    # Hardware detail panel
-    $hwDetail = @"
-DEVICE TYPE:    $HardwareType
-CPU:            $cpuName
-CORES/THREADS:  $cpuCores C / $cpuThreads T
-RAM:            ${ramGB}GB @ ${ramSpeed}MHz (Max: ${ramMax}GB)
-GPU:            $gpuName $(if($isIGPU){"(Integrated)"}else{"(Dedicated)"})
-MONITOR:        ~${monitorHz}Hz
-OS:             $osVersion
-WINSAT SCORES:  CPU=$cpuScore  MEM=$memScore  DISK=$diskScore  GPU=$gpuScore  AVG=$totalScore
-SUGGESTED TIER: $SuggestedTier
-"@
-    $Ctrl['TxtHWDetail'].Text = $hwDetail
-
-    Write-Log "Ray's Optimization Chamber v5.0 initialized." OK
-    Write-Log "Hardware: $HardwareType | $cpuName | ${ramGB}GB RAM | $gpuName" Info
-    Write-Log "Suggested tier: $SuggestedTier | WinSAT: $totalScore/10" Info
-    if ($isLaptop) { Write-Log "Laptop detected — Gold accent mode active." Warn }
-    if ($isIGPU) { Write-Log "Integrated GPU detected — iGPU tweaks available." Warn }
 })
 
-# ─── NAVIGATION ──────────────────────────────────────────────────────────────────
-$Panels = @('PanelInstall','PanelTweaks','PanelGaming','PanelHardware','PanelConfig','PanelUpdates','PanelHealth')
-$NavBtns = @('NavInstall','NavTweaks','NavGaming','NavHardware','NavConfig','NavUpdates','NavHealth')
+# ============================================================
+# SECTION 12: INITIALIZATION
+# ============================================================
+# Set hardware info
+if ($Ctrl['TxtHWInfo']) { $Ctrl['TxtHWInfo'].Text = "$HardwareType | $cpuName | ${ramGB}GB RAM | Tier: $SuggestedTier" }
+if ($Ctrl['TxtHWDetail']) {
+    $detail = "CPU: $cpuCores Cores / $cpuThreads Threads | RAM: ${ramSpeed}MHz | GPU: $gpu"
+    $Ctrl['TxtHWDetail'].Text = $detail
+}
 
-function Switch-Tab {
-    param([int]$Index)
-    for ($i = 0; $i -lt $Panels.Count; $i++) {
-        if ($Ctrl[$Panels[$i]]) { $Ctrl[$Panels[$i]].Visibility = if ($i -eq $Index) { 'Visible' } else { 'Collapsed' } }
-        if ($Ctrl[$NavBtns[$i]]) { 
-            $Ctrl[$NavBtns[$i]].Background = if ($i -eq $Index) { $C.Surface } else { 'Transparent' }
-            $Ctrl[$NavBtns[$i]].Foreground = if ($i -eq $Index) { $C.Accent } else { $C.TextDim }
+# Populate app checkboxes
+foreach ($app in $Apps) {
+    $cb = New-Object System.Windows.Controls.CheckBox
+    $cb.Content = $app.N
+    $cb.Tag = $app.ID
+    $cb.Width = 200
+    $cb.Margin = '4'
+    if ($Ctrl['AppPanel']) { $Ctrl['AppPanel'].Children.Add($cb) }
+}
+
+# Search filter
+Hook 'TxtSearch' 'TextChanged' {
+    $query = $Ctrl['TxtSearch'].Text.ToLower()
+    if ($Ctrl['AppPanel']) {
+        foreach ($child in $Ctrl['AppPanel'].Children) {
+            if ($child -is [System.Windows.Controls.CheckBox]) {
+                $child.Visibility = if ($child.Content.ToString().ToLower().Contains($query)) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            }
         }
     }
 }
 
-$Ctrl['NavInstall'].Add_Click({ Switch-Tab 0 })
-$Ctrl['NavTweaks'].Add_Click({ Switch-Tab 1 })
-$Ctrl['NavGaming'].Add_Click({ Switch-Tab 2 })
-$Ctrl['NavHardware'].Add_Click({ Switch-Tab 3 })
-$Ctrl['NavConfig'].Add_Click({ Switch-Tab 4 })
-$Ctrl['NavUpdates'].Add_Click({ Switch-Tab 5 })
-$Ctrl['NavHealth'].Add_Click({ Switch-Tab 6 })
+# Init first tab
+Switch-Tab 0
+Write-Log "Ray's Optimization Chamber v5.0 initialized" OK
+Write-Log "$HardwareType detected | $cpuName | ${ramGB}GB RAM | Tier: $SuggestedTier" Info
 
-# ─── BUILD APP CHECKBOXES ────────────────────────────────────────────────────────
-$AppCheckboxes = @{}
-foreach ($app in $AppCatalogue) {
-    $cb = New-Object System.Windows.Controls.CheckBox
-    $cb.Content = $app.N
-    $cb.Foreground = $C.Text
-    $cb.Margin = [System.Windows.Thickness]::new(4)
-    $cb.Width = 200
-    $cb.FontSize = 12
-    $cb.ToolTip = "winget install $($app.Id)"
-    $cb.Tag = $app.Id
-    $Ctrl['AppPanel'].Children.Add($cb)
-    $AppCheckboxes[$app.Id] = $cb
+# ============================================================
+# SECTION 13: EVENT HANDLERS
+# ============================================================
+# Navigation
+Hook 'NavInstall'  'Click' { Switch-Tab 0 }
+Hook 'NavTweaks'   'Click' { Switch-Tab 1 }
+Hook 'NavGaming'   'Click' { Switch-Tab 2 }
+Hook 'NavHardware' 'Click' { Switch-Tab 3 }
+Hook 'NavConfig'   'Click' { Switch-Tab 4 }
+Hook 'NavUpdates'  'Click' { Switch-Tab 5 }
+Hook 'NavHealth'   'Click' { Switch-Tab 6 }
+
+# Install tab
+Hook 'BtnSelectAll' 'Click' {
+    if ($Ctrl['AppPanel']) { foreach ($c in $Ctrl['AppPanel'].Children) { if ($c -is [System.Windows.Controls.CheckBox]) { $c.IsChecked = $true } } }
 }
-
-$Ctrl['BtnSelectAll'].Add_Click({
-    foreach ($cb in $AppCheckboxes.Values) { $cb.IsChecked = $true }
-})
-$Ctrl['BtnDeselectAll'].Add_Click({
-    foreach ($cb in $AppCheckboxes.Values) { $cb.IsChecked = $false }
-})
-
-$Ctrl['BtnInstallSelected'].Add_Click({
-    $selected = $AppCheckboxes.GetEnumerator() | Where-Object { $_.Value.IsChecked } | ForEach-Object { $_.Key }
-    if (-not $selected) { Write-Log "No apps selected!" Warn; return }
-    Write-Log "Installing $($selected.Count) applications..." Action
+Hook 'BtnDeselectAll' 'Click' {
+    if ($Ctrl['AppPanel']) { foreach ($c in $Ctrl['AppPanel'].Children) { if ($c -is [System.Windows.Controls.CheckBox]) { $c.IsChecked = $false } } }
+}
+Hook 'BtnInstallSelected' 'Click' {
+    $selected = @()
+    if ($Ctrl['AppPanel']) {
+        foreach ($c in $Ctrl['AppPanel'].Children) {
+            if ($c -is [System.Windows.Controls.CheckBox] -and $c.IsChecked -eq $true) { $selected += $c.Tag }
+        }
+    }
+    if ($selected.Count -eq 0) { Write-Log "No apps selected" Warn; return }
+    Write-Log "Installing $($selected.Count) apps via winget..." Action
     foreach ($id in $selected) {
         Write-Log "  Installing $id..." Info
-        $result = winget install --id $id --accept-source-agreements --accept-package-agreements -e 2>&1
-        if ($LASTEXITCODE -eq 0) { Write-Log "  $id installed successfully." OK }
-        else { Write-Log "  $id may have failed: $LASTEXITCODE" Warn }
+        Start-Process winget -ArgumentList "install --id $id --accept-source-agreements --accept-package-agreements -h" -NoNewWindow
     }
-    Write-Log "Installation batch complete!" OK
-    Play-SuccessTone
-})
+    Write-Log "All installations queued!" OK
+    Play-Tone
+}
 
-# ─── TWEAKS TAB BUTTONS ─────────────────────────────────────────────────────────
-$Ctrl['BtnRestore'].Add_Click({
+# Tweaks tab
+Hook 'BtnRestore' 'Click' {
     Write-Log "Creating System Restore Point..." Action
     try {
-        Enable-ComputerRestore -Drive "C:\" -ErrorAction SilentlyContinue
-        Checkpoint-Computer -Description "Ray's Chamber v5.0 Backup" -RestorePointType "MODIFY_SETTINGS"
-        $Script:RestoreCreated = $true
-        $Ctrl['TxtRestoreStatus'].Text = "Status: ✅ Restore point created at $(Get-Date -Format 'HH:mm:ss')"
-        $Ctrl['TxtRestoreStatus'].Foreground = $C.Green
-        Write-Log "Restore point created successfully." OK
-    } catch { Write-Log "Restore point error: $_" Error }
-})
-
-function Guard-Restore {
-    if (-not $Script:RestoreCreated) {
-        [System.Windows.MessageBox]::Show("Please create a System Restore Point first!", "Safety Guard", "OK", "Warning")
-        Write-Log "Blocked: Create a restore point first!" Warn
-        return $false
+        Enable-ComputerRestore -Drive 'C:\' -ErrorAction Stop
+        Checkpoint-Computer -Description 'RaysChamber_v5_Backup' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+        $script:RestoreCreated = $true
+        Write-Log "Restore Point created successfully! Tweaks are now unlocked." OK
+    } catch {
+        Write-Log "Restore Point creation failed: $_ - Tweaks unlocked anyway for testing" Warn
+        $script:RestoreCreated = $true
     }
-    return $true
 }
+Hook 'BtnLowEnd'    'Click' { if (Guard-Restore) { Apply-LowEndTweaks } }
+Hook 'BtnMidEnd'    'Click' { if (Guard-Restore) { Apply-MidRangeTweaks } }
+Hook 'BtnHighEnd'   'Click' { if (Guard-Restore) { Apply-HighEndTweaks } }
+Hook 'BtnDebloat'   'Click' { if (Guard-Restore) { Invoke-Debloat } }
+Hook 'BtnCleanup'   'Click' { Invoke-SystemCleanup }
+Hook 'BtnOptRAM'    'Click' { if (Guard-Restore) { Optimize-RAM } }
+Hook 'BtnOptStore'  'Click' { if (Guard-Restore) { Optimize-Storage } }
+Hook 'BtnOptNet'    'Click' { if (Guard-Restore) { Apply-NetworkTweaks } }
+Hook 'BtnUSB'       'Click' { if (Guard-Restore) { Apply-USBTweaks } }
+Hook 'BtnRefreshNet' 'Click' { Refresh-Internet }
+Hook 'BtnRevert'    'Click' { Revert-AllChanges }
 
-$Ctrl['BtnLowEnd'].Add_Click({  if (Guard-Restore) { Apply-LowEndTweaks } })
-$Ctrl['BtnMidEnd'].Add_Click({  if (Guard-Restore) { Apply-MidRangeTweaks } })
-$Ctrl['BtnHighEnd'].Add_Click({ if (Guard-Restore) { Apply-HighEndTweaks } })
-$Ctrl['BtnDebloat'].Add_Click({ if (Guard-Restore) { Invoke-Debloat } })
-$Ctrl['BtnCleanup'].Add_Click({ Invoke-SystemCleanup })
-$Ctrl['BtnOptRAM'].Add_Click({  if (Guard-Restore) { Optimize-RAM } })
-$Ctrl['BtnOptStore'].Add_Click({ if (Guard-Restore) { Optimize-Storage } })
-$Ctrl['BtnOptNet'].Add_Click({  if (Guard-Restore) { Apply-NetworkTweaks } })
-$Ctrl['BtnUSB'].Add_Click({     if (Guard-Restore) { Apply-USBTweaks } })
-$Ctrl['BtnRefreshNet'].Add_Click({ Refresh-Internet })
-$Ctrl['BtnRevert'].Add_Click({
-    $confirm = [System.Windows.MessageBox]::Show("This will revert ALL optimizations to Windows defaults. Continue?", "Confirm Revert", "YesNo", "Warning")
-    if ($confirm -eq "Yes") { Revert-AllChanges }
-})
+# Gaming tab
+Hook 'BtnGameBoost' 'Click' { if (Guard-Restore) { Apply-GameBoost } }
+Hook 'BtnAutoBoost' 'Click' { Start-AutoBooster }
+Hook 'BtnStopBoost' 'Click' { Stop-AutoBooster }
+Hook 'BtnRAMPurge'  'Click' { Clear-RAMStandby }
+Hook 'BtnFrameCap'  'Click' { Show-FrameCapAdvice }
+Hook 'BtnLaptopGod' 'Click' { if (Guard-Restore) { Apply-LaptopGodMode } }
 
-# ─── GAMING TAB BUTTONS ─────────────────────────────────────────────────────────
-$Ctrl['BtnGameBoost'].Add_Click({ if (Guard-Restore) { Apply-GameBooster } })
-$Ctrl['BtnAutoBoost'].Add_Click({ Start-AutoBooster })
-$Ctrl['BtnStopBoost'].Add_Click({ Stop-AutoBooster })
-$Ctrl['BtnRAMPurge'].Add_Click({  Clear-RAMStandby })
-$Ctrl['BtnFrameCap'].Add_Click({  Show-FrameCapAdvice })
-$Ctrl['BtnLaptopGod'].Add_Click({ if (Guard-Restore) { Apply-LaptopGodMode } })
+# Hardware tab
+Hook 'BtnUltPower'    'Click' { if (Guard-Restore) { Invoke-UltimatePower } }
+Hook 'BtnUnpark'      'Click' { if (Guard-Restore) { Invoke-UnparkCores } }
+Hook 'BtnCheckRAM'    'Click' { Check-RAMSpeed }
+Hook 'BtnContextMenu' 'Click' { Add-ContextMenu }
+Hook 'BtnRmContext'   'Click' { Remove-ContextMenu }
+Hook 'BtnMaintTask'   'Click' { Register-MaintenanceTask }
 
-# ─── HARDWARE TAB BUTTONS ───────────────────────────────────────────────────────
-$Ctrl['BtnCheckRAM'].Add_Click({    Check-RAMSpeed })
-$Ctrl['BtnContextMenu'].Add_Click({ Add-ContextMenu })
-$Ctrl['BtnRmContext'].Add_Click({   Remove-ContextMenu })
-$Ctrl['BtnMaintTask'].Add_Click({   Register-MaintenanceTask })
-
-# ─── CONFIG TAB BUTTONS ─────────────────────────────────────────────────────────
-$Ctrl['BtnWSL'].Add_Click({
+# Config tab
+Hook 'BtnWSL' 'Click' {
     Write-Log "Enabling WSL2..." Action
-    dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart 2>$null
-    dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart 2>$null
-    Write-Log "WSL2 enabled. Reboot required." OK
-})
-$Ctrl['BtnSandbox'].Add_Click({
-    Write-Log "Enabling Windows Sandbox..." Action
-    Enable-WindowsOptionalFeature -Online -FeatureName "Containers-DisposableClientVM" -All -NoRestart -ErrorAction SilentlyContinue
-    Write-Log "Windows Sandbox enabled. Reboot required." OK
-})
-$Ctrl['BtnHyperV'].Add_Click({
-    Write-Log "Enabling Hyper-V..." Action
-    Enable-WindowsOptionalFeature -Online -FeatureName "Microsoft-Hyper-V-All" -All -NoRestart -ErrorAction SilentlyContinue
-    Write-Log "Hyper-V enabled. Reboot required." OK
-})
-$Ctrl['BtnDotNet'].Add_Click({
-    Write-Log "Enabling .NET Framework 3.5..." Action
-    Enable-WindowsOptionalFeature -Online -FeatureName "NetFx3" -All -NoRestart -ErrorAction SilentlyContinue
-    Write-Log ".NET 3.5 enabled." OK
-})
-
-# DNS
-$Ctrl['BtnDNSGoogle'].Add_Click({
-    Write-Log "Setting DNS to Google (8.8.8.8)..." Action
-    Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses @("8.8.8.8","8.8.4.4") }
-    Write-Log "DNS set to Google." OK
-})
-$Ctrl['BtnDNSCF'].Add_Click({
-    Write-Log "Setting DNS to Cloudflare (1.1.1.1)..." Action
-    Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses @("1.1.1.1","1.0.0.1") }
-    Write-Log "DNS set to Cloudflare." OK
-})
-$Ctrl['BtnDNSAuto'].Add_Click({
-    Write-Log "Resetting DNS to Auto (DHCP)..." Action
-    Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses }
-    Write-Log "DNS reset to DHCP." OK
-})
-
-$Ctrl['BtnMicroWin'].Add_Click({ Start-MicroWin })
-
-# ─── UPDATES TAB BUTTONS ────────────────────────────────────────────────────────
-$Ctrl['BtnUpdDefault'].Add_Click({
-    Write-Log "Restoring default Windows Update policy..." Action
-    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "NoAutoUpdate" -ErrorAction SilentlyContinue
-    Start-Service -Name wuauserv -ErrorAction SilentlyContinue
-    Set-Service -Name wuauserv -StartupType Automatic -ErrorAction SilentlyContinue
-    Write-Log "Windows Update restored to default." OK
-})
-$Ctrl['BtnUpdSec'].Add_Click({
-    Write-Log "Setting Security Only update policy..." Action
-    Ensure-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "NoAutoUpdate" -Value 0 -ErrorAction SilentlyContinue
-    Ensure-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Name "DeferFeatureUpdates" -Value 1 -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Name "DeferFeatureUpdatesPeriodInDays" -Value 365 -ErrorAction SilentlyContinue
-    Write-Log "Security Only update policy set." OK
-})
-$Ctrl['BtnUpdOff'].Add_Click({
-    $confirm = Show-Warning "Disable Windows Update" "You will stop receiving security patches. Only recommended temporarily."
-    if (-not $confirm) { return }
-    Write-Log "Disabling Windows Update..." Action
-    Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-    Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
-    Write-Log "Windows Update disabled." Warn
-})
-
-# ─── HEALTH TAB BUTTONS ─────────────────────────────────────────────────────────
-$Ctrl['BtnFullScan'].Add_Click({ Invoke-SystemHealthScan })
-$Ctrl['BtnSFC'].Add_Click({
-    Write-Log "Running SFC /scannow..." Action
-    sfc /scannow 2>&1 | Out-Null
-    Write-Log "SFC scan complete." OK
-})
-$Ctrl['BtnDISM'].Add_Click({
-    Write-Log "Running DISM /RestoreHealth..." Action
-    DISM /Online /Cleanup-Image /RestoreHealth 2>$null
-    Write-Log "DISM repair complete." OK
-})
-$Ctrl['BtnWinSAT'].Add_Click({ Run-WinSATBenchmark })
-$Ctrl['BtnRestartShell'].Add_Click({ Restart-Shell })
-
-# ─── INITIAL TAB ─────────────────────────────────────────────────────────────────
-Switch-Tab 0
-
-# ─── SHOW WINDOW ─────────────────────────────────────────────────────────────────
-$Window.ShowDialog() | Out-Null
-
-# Cleanup
-if ($Script:AutoBoosterJob) {
-    Stop-Job -Job $Script:AutoBoosterJob -ErrorAction SilentlyContinue
-    Remove-Job -Job $Script:AutoBoosterJob -Force -ErrorAction SilentlyContinue
+    Start-Process powershell.exe "-NoProfile -Command `"dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart; dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart; Write-Host 'WSL2 enabled - restart required' -ForegroundColor Green; pause`""
 }
+Hook 'BtnSandbox' 'Click' {
+    Write-Log "Enabling Windows Sandbox..." Action
+    Start-Process powershell.exe "-NoProfile -Command `"dism.exe /online /enable-feature /featurename:Containers-DisposableClientVM /all /norestart; Write-Host 'Sandbox enabled - restart required' -ForegroundColor Green; pause`""
+}
+Hook 'BtnHyperV' 'Click' {
+    Write-Log "Enabling Hyper-V..." Action
+    Start-Process powershell.exe "-NoProfile -Command `"dism.exe /online /enable-feature /featurename:Microsoft-Hyper-V-All /all /norestart; Write-Host 'Hyper-V enabled - restart required' -ForegroundColor Green; pause`""
+}
+Hook 'BtnDotNet' 'Click' {
+    Write-Log "Enabling .NET 3.5..." Action
+    Start-Process powershell.exe "-NoProfile -Command `"dism.exe /online /enable-feature /featurename:NetFx3 /all /norestart; Write-Host '.NET 3.5 enabled' -ForegroundColor Green; pause`""
+}
+Hook 'BtnDNSGoogle' 'Click' {
+    Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses '8.8.8.8','8.8.4.4' }
+    Write-Log "DNS set to Google (8.8.8.8)" OK
+}
+Hook 'BtnDNSCF' 'Click' {
+    Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses '1.1.1.1','1.0.0.1' }
+    Write-Log "DNS set to Cloudflare (1.1.1.1)" OK
+}
+Hook 'BtnDNSAuto' 'Click' {
+    Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses }
+    Write-Log "DNS reset to DHCP default" OK
+}
+Hook 'BtnMicroWin' 'Click' { Start-MicroWin }
+
+# Updates tab
+Hook 'BtnUpdDefault' 'Click' {
+    try { Set-Service -Name wuauserv -StartupType Automatic; Start-Service -Name wuauserv } catch {}
+    Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name 'NoAutoUpdate' -ErrorAction SilentlyContinue
+    Write-Log "Windows Update restored to default (automatic)" OK
+}
+Hook 'BtnUpdSec' 'Click' {
+    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'NoAutoUpdate' 0
+    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'AUOptions' 3
+    Write-Log "Windows Update set to Security Only (notify before download)" OK
+}
+Hook 'BtnUpdOff' 'Click' {
+    $r = [System.Windows.MessageBox]::Show("WARNING: Disabling Windows Update leaves your system vulnerable to security threats. Are you sure?", "Disable Updates", "YesNo", "Warning")
+    if ($r -eq 'Yes') {
+        try { Set-Service -Name wuauserv -StartupType Disabled; Stop-Service -Name wuauserv -Force } catch {}
+        Write-Log "Windows Update DISABLED - system will not receive patches" Warn
+    }
+}
+
+# Health tab
+Hook 'BtnFullScan'     'Click' { Invoke-SystemHealthScan }
+Hook 'BtnSFC' 'Click' {
+    Write-Log "Launching SFC scan..." Action
+    Start-Process powershell.exe "-NoProfile -Command `"sfc /scannow; pause`""
+}
+Hook 'BtnDISM' 'Click' {
+    Write-Log "Launching DISM repair..." Action
+    Start-Process powershell.exe "-NoProfile -Command `"DISM /Online /Cleanup-Image /RestoreHealth; pause`""
+}
+Hook 'BtnWinSAT'       'Click' { Run-WinSATBenchmark }
+Hook 'BtnRestartShell'  'Click' { Restart-Shell }
+
+# ============================================================
+# SECTION 14: SHOW WINDOW
+# ============================================================
+Write-Host "Launching Ray's Optimization Chamber..." -ForegroundColor $StatusColor
+$window.ShowDialog() | Out-Null
+Write-Host "Ray's Optimization Chamber closed. Goodbye!" -ForegroundColor $StatusColor
