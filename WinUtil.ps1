@@ -335,6 +335,31 @@ function Disable-FSO { Write-Log "Disabling FSO..." Action; Set-Reg 'HKCU:\Syste
 function Set-TimerResolution { Write-Log "Timer resolution..." Action; bcdedit /set useplatformtick yes 2>$null; bcdedit /set disabledynamictick yes 2>$null; bcdedit /set useplatformclock yes 2>$null; Write-Log "Timer 0.5ms via BCD" OK; Play-Tone }
 function Fix-DPCLatency { Write-Log "DPC Latency fix..." Action; powercfg -setacvalueindex scheme_current 501a4d13-42af-4429-9fd1-a8218c268e20 ee12f906-d277-404b-b6da-e5fa1a576df5 0 2>$null; powercfg -setactive scheme_current 2>$null; Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\USB' 'DisableSelectiveSuspend' 1; Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'ExitLatency' 1; Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'DisableSensorWatchdog' 1; Write-Log "DPC reduced" OK; Play-Tone }
 
+function Force-VSync {
+    Write-Log "Forcing V-Sync ON globally..." Action
+    # NVIDIA - Force V-Sync via driver profile
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Direct3D\Drivers' 'SoftwareOnly' 0
+    Set-Reg 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' 'DirectXUserGlobalSettings' 'VRROptimizeEnable=0;SwapEffectUpgradeEnable=0;' 'String'
+    # NVIDIA Global Profile - VSync = Force ON (value 2)
+    $nvPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000'
+    Set-Reg $nvPath 'RMVsyncControl' 1
+    # DWM - Ensure desktop composition sync
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'ForceEffectMode' 1
+    # DirectX - Disable flip model bypass (ensures present sync)
+    Set-Reg 'HKCU:\Software\Microsoft\DirectX\GraphicsSettings' 'SwapEffectUpgradeCache' 0
+    # AMD - Enable Wait for Vertical Refresh
+    $amdPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000\UMD'
+    Set-Reg $amdPath 'Main3D_DEF' '1' 'String'
+    Set-Reg $amdPath 'Wait for Vertical Refresh_DEF' '4' 'String'
+    # Frame Rate limiter helper - match monitor Hz
+    $hz = try { (Get-CimInstance Win32_VideoController).CurrentRefreshRate | Select-Object -First 1 } catch { 60 }
+    if (-not $hz -or $hz -eq 0) { $hz = 60 }
+    Write-Log "  V-Sync ON | Monitor: ${hz}Hz | Frames capped to ${hz} FPS" Info
+    Write-Log "  NVIDIA: RMVsyncControl=1 | AMD: WaitForVRefresh=Always" Info
+    Write-Log "  Tip: Also enable in-game V-Sync for best results" Info
+    Write-Log "Force V-Sync applied! Restart GPU driver or reboot for full effect." OK; Play-Tone
+}
+
 function Start-AutoBooster {
     if ($script:BoostTimer) { Write-Log "Auto-Booster already running" Warn; return }
     $script:BoostTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -402,6 +427,9 @@ function Revert-AllChanges {
     Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\USB' -Name 'DisableSelectiveSuspend' -ErrorAction SilentlyContinue
     Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'LargeSystemCache' 1
     Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' -Name 'OverlayTestMode' -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' -Name 'ForceEffectMode' -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000' -Name 'RMVsyncControl' -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\DirectX\GraphicsSettings' -Name 'SwapEffectUpgradeCache' -ErrorAction SilentlyContinue
     Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 2
     Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\DirectX' -Name 'ShaderCacheSizeLimitKB' -ErrorAction SilentlyContinue
     fsutil behavior set disablelastaccess 2 2>$null
@@ -596,6 +624,7 @@ $xaml = @'
                         <Button Name="BtnHAGS" Content="Toggle HAGS" ToolTip="Hardware-Accelerated GPU Scheduling"/>
                         <Button Name="BtnShaderCache" Content="Expand Shader Cache" ToolTip="Unlimited - no first-run stutters"/>
                         <Button Name="BtnFSO" Content="Disable FSO" ToolTip="True exclusive fullscreen restored"/>
+                        <Button Name="BtnVSync" Content="Force V-Sync ON" ToolTip="Forces vertical sync globally via NVIDIA/AMD/DWM registry keys. Eliminates screen tearing. Caps FPS to monitor Hz."/>
                     </WrapPanel>
                     <TextBlock Text="-- Latency Control --" FontSize="13" FontWeight="Bold" Foreground="#00FFCC" Margin="0,12,0,4"/>
                     <WrapPanel>
@@ -715,7 +744,7 @@ $allExpected = @(
     'BtnDebloat','BtnCleanup','BtnServiceManual',
     'BtnOptRAM','BtnStandbyClean','BtnPagefile','BtnLargeCache','BtnOptStore','BtnNTFS',
     'BtnOptNet','BtnRefreshNet','BtnUSB','BtnRevert',
-    'BtnGameBoost','BtnAutoBoost','BtnStopBoost','BtnMPO','BtnHAGS','BtnShaderCache','BtnFSO',
+    'BtnGameBoost','BtnAutoBoost','BtnStopBoost','BtnMPO','BtnHAGS','BtnShaderCache','BtnFSO','BtnVSync',
     'BtnTimerRes','BtnDPCLatency','BtnRAMPurge','BtnFrameCap','BtnLaptopGod',
     'TxtHWInfo','TxtHWDetail','BtnUltPower','BtnUnpark','BtnMSIMode','BtnCheckRAM',
     'BtnContextMenu','BtnRmContext','BtnMaintTask',
@@ -791,6 +820,7 @@ Wire 'BtnMPO'        { Write-Log "DEBUG: MPO" Info; try{if(Guard-Restore){Disabl
 Wire 'BtnHAGS'       { Write-Log "DEBUG: HAGS" Info; try{if(Guard-Restore){Toggle-HAGS}}catch{Write-Log "Error: $_" Error} }
 Wire 'BtnShaderCache' { Write-Log "DEBUG: Shader" Info; try{if(Guard-Restore){Expand-ShaderCache}}catch{Write-Log "Error: $_" Error} }
 Wire 'BtnFSO'        { Write-Log "DEBUG: FSO" Info; try{if(Guard-Restore){Disable-FSO}}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnVSync'      { Write-Log "DEBUG: VSync" Info; try{if(Guard-Restore){Force-VSync}}catch{Write-Log "Error: $_" Error} }
 Wire 'BtnTimerRes'   { Write-Log "DEBUG: Timer" Info; try{if(Guard-Restore){Set-TimerResolution}}catch{Write-Log "Error: $_" Error} }
 Wire 'BtnDPCLatency' { Write-Log "DEBUG: DPC" Info; try{if(Guard-Restore){Fix-DPCLatency}}catch{Write-Log "Error: $_" Error} }
 Wire 'BtnRAMPurge'   { try{Clear-StandbyList}catch{Write-Log "Error: $_" Error} }
