@@ -326,6 +326,26 @@ function Apply-USBTweaks {
     Write-Log "USB/Input optimized" OK; Play-Tone
 }
 
+# --- WINDOWS TWEAKS (Quality of Life) ---
+function Enable-DarkMode { Write-Log "Enabling system-wide Dark Mode..." Action; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'AppsUseLightTheme' 0; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'SystemUsesLightTheme' 0; Write-Log "Dark Mode enabled" OK; Play-Tone }
+function Enable-LightMode { Write-Log "Enabling Light Mode..." Action; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'AppsUseLightTheme' 1; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'SystemUsesLightTheme' 1; Write-Log "Light Mode enabled" OK; Play-Tone }
+function Disable-StickyKeys { Write-Log "Disabling Sticky Keys popup..." Action; Set-Reg 'HKCU:\Control Panel\Accessibility\StickyKeys' 'Flags' '506' 'String'; Set-Reg 'HKCU:\Control Panel\Accessibility\Keyboard Response' 'Flags' '122' 'String'; Set-Reg 'HKCU:\Control Panel\Accessibility\ToggleKeys' 'Flags' '58' 'String'; Write-Log "Sticky/Filter/Toggle Keys disabled" OK; Play-Tone }
+function Disable-Cortana { Write-Log "Disabling Cortana..." Action; Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'AllowCortana' 0; Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'AllowCortanaAboveLock' 0; Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'AllowSearchToUseLocation' 0; Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'ConnectedSearchUseWeb' 0; Write-Log "Cortana fully disabled" OK; Play-Tone }
+function Enable-ClipboardHistory { Write-Log "Enabling Clipboard History (Win+V)..." Action; Set-Reg 'HKCU:\Software\Microsoft\Clipboard' 'EnableClipboardHistory' 1; Write-Log "Clipboard History ON - use Win+V" OK; Play-Tone }
+function Restore-ClassicContextMenu { Write-Log "Restoring classic right-click menu..." Action; New-Item -Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32' -Force | Out-Null; Set-ItemProperty -Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32' -Name '(Default)' -Value '' -Force; Write-Log "Classic context menu restored - restart Explorer" OK; Restart-Shell; Play-Tone }
+function Restore-Win11ContextMenu { Write-Log "Restoring Win11 context menu..." Action; Remove-Item -Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}' -Recurse -Force -ErrorAction SilentlyContinue; Write-Log "Win11 context menu restored" OK; Restart-Shell; Play-Tone }
+function Disable-WiFiSense { Write-Log "Disabling Wi-Fi Sense..." Action; Set-Reg 'HKLM:\SOFTWARE\Microsoft\WcmSvc\wifinetworkmanager\config' 'AutoConnectAllowedOEM' 0; Set-Reg 'HKLM:\SOFTWARE\Microsoft\PolicyManager\default\WiFi\AllowWiFiHotSpotReporting' 'Value' 0; Set-Reg 'HKLM:\SOFTWARE\Microsoft\PolicyManager\default\WiFi\AllowAutoConnectToWiFiSenseHotspots' 'Value' 0; Write-Log "Wi-Fi Sense disabled" OK; Play-Tone }
+function Disable-FastStartup { Write-Log "Disabling Fast Startup..." Action; Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 0; Write-Log "Fast Startup disabled (fixes driver/update issues)" OK; Play-Tone }
+function Enable-NumLockBoot { Write-Log "Enabling NumLock on boot..." Action; Set-Reg 'HKCU:\Control Panel\Keyboard' 'InitialKeyboardIndicators' '2' 'String'; Set-Reg 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard' 'InitialKeyboardIndicators' '2' 'String'; Write-Log "NumLock will be ON at login" OK; Play-Tone }
+function Show-SecondsOnClock { Write-Log "Showing seconds on taskbar clock..." Action; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowSecondsInSystemClock' 1; Write-Log "Seconds on clock - restart Explorer" OK; Restart-Shell; Play-Tone }
+function Disable-LockScreenAds { Write-Log "Disabling lock screen ads/tips..." Action; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'RotatingLockScreenOverlayEnabled' 0; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'SubscribedContent-338387Enabled' 0; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'SubscribedContent-338389Enabled' 0; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'SubscribedContent-310093Enabled' 0; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'SubscribedContent-338393Enabled' 0; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'SilentInstalledAppsEnabled' 0; Write-Log "Lock screen ads/tips disabled" OK; Play-Tone }
+function Enable-VerboseBoot { Write-Log "Enabling verbose boot messages..." Action; Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'VerboseStatus' 1; Write-Log "Verbose boot enabled - see details on startup" OK; Play-Tone }
+function Enable-EndTaskTaskbar { Write-Log "Enabling End Task in taskbar..." Action; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings' 'TaskbarEndTask' 1; Write-Log "Right-click taskbar now shows End Task (Win11)" OK; Play-Tone }
+function Restore-PhotoViewer { Write-Log "Restoring Classic Photo Viewer..." Action; $types=@('.jpg','.jpeg','.png','.bmp','.gif','.tif','.tiff'); foreach($t in $types){$p="HKCU:\Software\Classes\$t"; New-Item -Path $p -Force|Out-Null; Set-ItemProperty -Path $p -Name '(Default)' -Value 'PhotoViewer.FileAssoc.Tiff' -Force}; Set-Reg 'HKCU:\Software\Classes\PhotoViewer.FileAssoc.Tiff\shell\open\command' '(Default)' '"%SystemRoot%\System32\rundll32.exe" "%ProgramFiles%\Windows Photo Viewer\PhotoViewer.dll", ImageView_Fullscreen %1' 'String'; Write-Log "Classic Photo Viewer restored" OK; Play-Tone }
+function Disable-Hibernation { Write-Log "Disabling Hibernation..." Action; powercfg /h off 2>$null; Write-Log "Hibernation OFF - disk space reclaimed" OK; Play-Tone }
+function Enable-Hibernation { Write-Log "Enabling Hibernation..." Action; powercfg /h on 2>$null; Write-Log "Hibernation ON" OK; Play-Tone }
+function Create-GodModeFolder { Write-Log "Creating God Mode shortcut..." Action; $p="$env:USERPROFILE\Desktop\GodMode.{ED7BA470-8E54-465E-825C-99712043E01C}"; if(-not(Test-Path $p)){New-Item -Path $p -ItemType Directory -Force|Out-Null; Write-Log "God Mode folder created on Desktop" OK}else{Write-Log "God Mode already exists" Info}; Play-Tone }
+
 # --- GAMING ---
 function Apply-GameBoost { Write-Log "Zero Latency..." Action; bcdedit /set useplatformtick yes 2>$null; bcdedit /set disabledynamictick yes 2>$null; Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38; Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 10; Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex' 0xffffffff; $g='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'; Set-Reg $g 'GPU Priority' 8; Set-Reg $g 'Priority' 6; Set-Reg $g 'Scheduling Category' 'High' 'String'; Set-Reg $g 'SFIO Priority' 'High' 'String'; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 0; Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0; Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_FSEBehaviorMode' 2; Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseSpeed' '0' 'String'; Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseThreshold1' '0' 'String'; Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseThreshold2' '0' 'String'; Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'PowerThrottlingOff' 1; Write-Log "Zero Latency ACTIVE!" OK; Play-Tone }
 function Disable-MPO { Write-Log "Disabling MPO..." Action; Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'OverlayTestMode' 5; Write-Log "MPO disabled" OK; Play-Tone }
@@ -685,6 +705,31 @@ $xaml = @'
                     </WrapPanel>
                     <TextBlock Text="-- Advanced --" FontSize="13" FontWeight="Bold" Foreground="#00FFCC" Margin="0,12,0,4"/>
                     <Button Name="BtnMicroWin" Content="MicroWin ISO Debloat" ToolTip="Strip bloatware from Windows ISO"/>
+
+                    <TextBlock Text="-- Windows Tweaks --" FontSize="13" FontWeight="Bold" Foreground="#00FFCC" Margin="0,16,0,4"/>
+                    <WrapPanel>
+                        <Button Name="BtnDarkMode" Content="Dark Mode ON" ToolTip="Force system-wide dark theme for apps and system"/>
+                        <Button Name="BtnLightMode" Content="Light Mode ON" ToolTip="Switch back to light theme"/>
+                        <Button Name="BtnClassicMenu" Content="Classic Right-Click" ToolTip="Restores Windows 10 style right-click menu (removes Show more options)"/>
+                        <Button Name="BtnWin11Menu" Content="Win11 Right-Click" ToolTip="Restores default Windows 11 context menu"/>
+                        <Button Name="BtnStickyKeys" Content="Disable Sticky Keys" ToolTip="Prevents the annoying Shift x5 popup and Filter/Toggle key prompts"/>
+                        <Button Name="BtnCortana" Content="Disable Cortana" ToolTip="Fully disables Cortana background process and web search"/>
+                        <Button Name="BtnClipboard" Content="Enable Clipboard History" ToolTip="Enables Win+V clipboard manager with history"/>
+                        <Button Name="BtnWiFiSense" Content="Disable Wi-Fi Sense" ToolTip="Stops Windows from auto-sharing WiFi passwords"/>
+                        <Button Name="BtnFastStartup" Content="Disable Fast Startup" ToolTip="Prevents driver conflicts and update issues from hybrid shutdown"/>
+                        <Button Name="BtnLockAds" Content="Disable Lock Screen Ads" ToolTip="Removes tips, suggestions, and ads from the lock screen"/>
+                        <Button Name="BtnEndTask" Content="Enable End Task (Taskbar)" ToolTip="Adds End Task to right-click on taskbar items in Win11"/>
+                        <Button Name="BtnPhotoViewer" Content="Restore Photo Viewer" ToolTip="Brings back the classic Windows Photo Viewer for images"/>
+                        <Button Name="BtnGodMode" Content="God Mode Folder" ToolTip="Creates a desktop folder with access to ALL Control Panel settings"/>
+                    </WrapPanel>
+                    <TextBlock Text="-- Boot and Power --" FontSize="13" FontWeight="Bold" Foreground="#00FFCC" Margin="0,12,0,4"/>
+                    <WrapPanel>
+                        <Button Name="BtnNumLock" Content="NumLock on Boot" ToolTip="Auto-enables NumLock when you log in"/>
+                        <Button Name="BtnClockSec" Content="Show Seconds on Clock" ToolTip="Displays seconds in the taskbar clock"/>
+                        <Button Name="BtnVerboseBoot" Content="Verbose Boot" ToolTip="Shows detailed status messages during startup instead of spinner"/>
+                        <Button Name="BtnHibOff" Content="Disable Hibernation" ToolTip="Turns off hibernation and reclaims disk space (deletes hiberfil.sys)"/>
+                        <Button Name="BtnHibOn" Content="Enable Hibernation" ToolTip="Re-enables hibernation for sleep-to-disk"/>
+                    </WrapPanel>
                 </StackPanel>
             </ScrollViewer>
 
@@ -749,6 +794,9 @@ $allExpected = @(
     'TxtHWInfo','TxtHWDetail','BtnUltPower','BtnUnpark','BtnMSIMode','BtnCheckRAM',
     'BtnContextMenu','BtnRmContext','BtnMaintTask',
     'BtnWSL','BtnSandbox','BtnHyperV','BtnDotNet','BtnDNSGoogle','BtnDNSCF','BtnDNSAuto','BtnMicroWin',
+    'BtnDarkMode','BtnLightMode','BtnClassicMenu','BtnWin11Menu','BtnStickyKeys','BtnCortana','BtnClipboard',
+    'BtnWiFiSense','BtnFastStartup','BtnLockAds','BtnEndTask','BtnPhotoViewer','BtnGodMode',
+    'BtnNumLock','BtnClockSec','BtnVerboseBoot','BtnHibOff','BtnHibOn',
     'BtnUpdDefault','BtnUpdSec','BtnUpdOff','BtnFullScan','BtnSFC','BtnDISM','BtnWinSAT','BtnRestartShell'
 )
 $miss = @()
@@ -845,6 +893,26 @@ Wire 'BtnDNSGoogle' { try{Get-NetAdapter|Where-Object Status -eq 'Up'|ForEach-Ob
 Wire 'BtnDNSCF'    { try{Get-NetAdapter|Where-Object Status -eq 'Up'|ForEach-Object{Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses '1.1.1.1','1.0.0.1'};Write-Log "Cloudflare DNS set" OK}catch{Write-Log "Error: $_" Error} }
 Wire 'BtnDNSAuto'  { try{Get-NetAdapter|Where-Object Status -eq 'Up'|ForEach-Object{Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses};Write-Log "DNS reset to DHCP" OK}catch{Write-Log "Error: $_" Error} }
 Wire 'BtnMicroWin'  { try{Start-MicroWin}catch{Write-Log "Error: $_" Error} }
+
+# Windows Tweaks
+Wire 'BtnDarkMode'    { try{Enable-DarkMode}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnLightMode'   { try{Enable-LightMode}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnClassicMenu' { try{Restore-ClassicContextMenu}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnWin11Menu'   { try{Restore-Win11ContextMenu}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnStickyKeys'  { try{Disable-StickyKeys}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnCortana'     { try{if(Guard-Restore){Disable-Cortana}}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnClipboard'   { try{Enable-ClipboardHistory}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnWiFiSense'   { try{if(Guard-Restore){Disable-WiFiSense}}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnFastStartup' { try{if(Guard-Restore){Disable-FastStartup}}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnLockAds'     { try{Disable-LockScreenAds}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnEndTask'     { try{Enable-EndTaskTaskbar}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnPhotoViewer' { try{Restore-PhotoViewer}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnGodMode'     { try{Create-GodModeFolder}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnNumLock'     { try{Enable-NumLockBoot}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnClockSec'    { try{Show-SecondsOnClock}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnVerboseBoot' { try{if(Guard-Restore){Enable-VerboseBoot}}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnHibOff'      { try{Disable-Hibernation}catch{Write-Log "Error: $_" Error} }
+Wire 'BtnHibOn'       { try{Enable-Hibernation}catch{Write-Log "Error: $_" Error} }
 
 # Updates
 Wire 'BtnUpdDefault' { try{Set-Service -Name wuauserv -StartupType Automatic -ErrorAction Stop;Start-Service -Name wuauserv -ErrorAction Stop;Write-Log "Updates default" OK}catch{Write-Log "Error: $_" Error} }
