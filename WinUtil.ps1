@@ -2,7 +2,7 @@
 #  RAY'S OPTIMIZATION CHAMBER v8.0 - ULTIMATE EDITION
 #  PC vs Laptop | 100+ controls | 55+ tweaks | Full Undo
 # ============================================================
-$script:BUILD = '14.0-ZEROTEAR-PRO'
+$script:BUILD = '17.0-SAFETY-AUDIT'
 
 # --- SECTION 1: ADMIN ELEVATION ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -154,7 +154,10 @@ function Apply-DesktopLow {
     Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2
     # Benefit: Stops CPU from compressing/decompressing RAM pages in real-time
     # Risk: Higher physical RAM usage; only disable if you have 8GB+ to spare
-    if ($ramGB -ge 8) { try { Disable-MMAgent -MemoryCompression -ErrorAction Stop; Write-Log "  Memory compression disabled (8GB+ detected)" Info } catch {} }
+    # AUDIT: Keep compression ON if using integrated GPU (shares system RAM as VRAM)
+    $desktopIGPU = $gpu -match 'Intel|UHD|Iris|Vega|AMD Radeon\(TM\) Graphics'
+    if ($ramGB -ge 8 -and -not $desktopIGPU) { try { Disable-MMAgent -MemoryCompression -ErrorAction Stop; Write-Log "  Memory compression disabled (8GB+ dGPU)" Info } catch {} }
+    elseif ($desktopIGPU) { Write-Log "  [AUDIT] Memory compression kept ON (iGPU shares RAM as VRAM)" Warn }
     # Benefit(SysMain): Stops prefetch/superfetch disk thrashing on HDDs
     # Risk: First app launch slightly slower (no preloading); SSDs don't benefit much
     # Benefit(DiagTrack): Stops Microsoft telemetry CPU/network usage
@@ -294,18 +297,27 @@ function Apply-LaptopHigh {
     if ($r -eq 'No') { return }
     Write-Log "LAPTOP High-End: Max power with thermal safety..." Action
     Apply-LaptopMid
-    # BCD timer (safe on laptops)
-    bcdedit /set useplatformtick yes 2>$null; bcdedit /set disabledynamictick yes 2>$null
-    Write-Log "  BCD timers optimized" Info
-    # GPU priority (safe)
+    # AUDIT FIX: BCD timers REMOVED for laptops
+    # Reason: disabledynamictick causes clock desync on 11th/12th gen Intel mobile CPUs
+    # This can trigger anti-cheat kicks (Hyperion/EAC think you're speed-hacking)
+    # and causes timer drift = micro-stutters on 60Hz displays
+    Write-Log "  [AUDIT] BCD timers SKIPPED (causes clock desync on mobile Intel)" Warn
+    # GPU priority (safe on all hardware)
     $gpuTask = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
     Set-Reg $gpuTask 'GPU Priority' 8; Set-Reg $gpuTask 'Priority' 6
     Set-Reg $gpuTask 'Scheduling Category' 'High' 'String'; Set-Reg $gpuTask 'SFIO Priority' 'High' 'String'
-    # Unlock processor boost mode
-    $bPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\be337238-0d82-4146-a960-4f3749d470c7'
-    Set-Reg $bPath 'Attributes' 0
-    Write-Log "  Processor Boost Mode unlocked in power options" Info
-    # Disable Efficiency Mode
+    # Check for Dell/HP/Lenovo DPTF firmware that fights power tweaks
+    $isDPTF = $cpuName -match 'i[3579]-1[1-4]' -and (Get-Service 'igfxCUIService*','DTSApo4Service','IntelDalJhi' -ErrorAction SilentlyContinue | Where-Object Status -eq 'Running')
+    if ($isDPTF) {
+        Write-Log "  [WARN] Dell/HP/Lenovo DPTF firmware detected - boost unlock may conflict" Warn
+        Write-Log "  [WARN] If CPU locks to 0.4GHz, revert this preset and use Mid-Range instead" Warn
+    } else {
+        # Only unlock boost if no DPTF conflict detected
+        $bPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\be337238-0d82-4146-a960-4f3749d470c7'
+        Set-Reg $bPath 'Attributes' 0
+        Write-Log "  Processor Boost Mode unlocked (no DPTF conflict)" Info
+    }
+    # Efficiency Mode disable (safe - only affects active foreground apps)
     $ePath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583'
     Set-Reg $ePath 'Attributes' 0
     Write-Log "  Efficiency Mode disabled for active apps" Info
@@ -768,133 +780,134 @@ function Check-GPUMSIStatus { Write-Log "Checking GPU MSI Mode status..." Action
 # set GPU Low Latency, disable DWM interference. Result: zero tearing + zero input lag.
 
 function Enable-ZeroTear {
-    Write-Log "ZERO-TEAR PRO: 12-layer anti-tear system..." Action
+    Write-Log "ZERO-TEAR PRO v2: Hardware-aware anti-tear system..." Action
     $hz = try { (Get-CimInstance Win32_VideoController).CurrentRefreshRate | Select-Object -First 1 } catch { 60 }
     if (-not $hz -or $hz -eq 0) { $hz = 60 }
     $capFPS = $hz - 3
-    Write-Log "  Monitor: ${hz}Hz | Frame cap target: $capFPS FPS" Info
+    $gpuName = try { (Get-CimInstance Win32_VideoController | Select-Object -First 1).Name } catch { '' }
+    $isIGPU = $gpuName -match 'Intel|UHD|Iris|Vega|AMD Radeon\(TM\) Graphics'
+    $is60Hz = $hz -le 60
+    $layerCount = 0
 
-    # LAYER 1: DWM Composition - stop DWM from adding frame buffering
+    Write-Log "  Monitor: ${hz}Hz | GPU: $gpuName | iGPU: $isIGPU | Cap: $capFPS FPS" Info
+
+    # LAYER 1: DWM ForceEffectMode - SAFE on all hardware
     Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'ForceEffectMode' 0
-    Write-Log "  [1/12] DWM ForceEffectMode=0 (no extra frame buffer)" Info
+    $layerCount++; Write-Log "  [$layerCount] DWM ForceEffectMode=0 (no extra buffer)" Info
 
-    # LAYER 2: DWM Overlays - disable internal V-Sync overlay
+    # LAYER 2: DWM Overlays disable - SAFE on all hardware
     Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'DisableOverlays' 1
-    Write-Log "  [2/12] DWM Overlays disabled" Info
+    $layerCount++; Write-Log "  [$layerCount] DWM Overlays disabled" Info
 
-    # LAYER 3: DWM V-Sync TSC - prevent compositor from syncing
-    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'DisableDWMVSyncTSC' 1
-    Write-Log "  [3/12] DWM V-Sync TSC disabled" Info
+    # LAYER 3: DWM V-Sync TSC - SKIP on iGPU (causes double-sync on shared GPU = +16ms lag on 60Hz)
+    if (-not $isIGPU) {
+        Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'DisableDWMVSyncTSC' 1
+        $layerCount++; Write-Log "  [$layerCount] DWM V-Sync TSC disabled (dGPU detected)" Info
+    } else {
+        Write-Log "  [SKIP] DWM V-Sync TSC - iGPU detected (would cause double-sync lag)" Warn
+    }
 
-    # LAYER 4: Pre-rendered frames = 1 (THE key fix for tearing + input lag)
-    # This tells the GPU to only queue 1 frame ahead instead of 3
-    # Without this, the GPU renders frames faster than the monitor displays them = TEARING
+    # LAYER 4: Pre-rendered frames = 1 (THE CRITICAL FIX - safe on ALL hardware)
     Set-Reg 'HKLM:\SOFTWARE\Microsoft\DirectX\GraphicsSettings' 'MaxQueuedFrames' 1
     Set-Reg 'HKLM:\SOFTWARE\Microsoft\DirectX' 'MaxQueuedFrames' 1
-    Write-Log "  [4/12] Pre-rendered frames = 1 (KEY anti-tear fix)" Info
+    $layerCount++; Write-Log "  [$layerCount] Pre-rendered frames = 1 (CRITICAL anti-tear fix)" Info
 
-    # LAYER 5: Flip Presentation Model - better frame pacing than legacy BitBlt
-    Set-Reg 'HKLM:\SOFTWARE\Microsoft\DirectX' 'SwapEffectUpgradeEnable' 1
-    Set-Reg 'HKLM:\SOFTWARE\Microsoft\DirectX' 'ForceFlipPresentModel' 1
-    Write-Log "  [5/12] Flip Model FORCED (inherently better pacing)" Info
+    # LAYER 5: Flip Model - SKIP on iGPU (Intel driver conflicts with forced flip = flicker/stutter)
+    if (-not $isIGPU) {
+        Set-Reg 'HKLM:\SOFTWARE\Microsoft\DirectX' 'SwapEffectUpgradeEnable' 1
+        Set-Reg 'HKLM:\SOFTWARE\Microsoft\DirectX' 'ForceFlipPresentModel' 1
+        $layerCount++; Write-Log "  [$layerCount] Flip Model FORCED (dGPU - safe)" Info
+    } else {
+        Write-Log "  [SKIP] Flip Model force - iGPU detected (Intel driver conflicts cause flicker)" Warn
+    }
 
-    # LAYER 6: HAGS - GPU manages its own memory queue
-    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 2
-    Write-Log "  [6/12] HAGS enabled" Info
+    # LAYER 6: HAGS - SKIP on iGPU (steals shared VRAM management from CPU = lower FPS)
+    if (-not $isIGPU) {
+        Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 2
+        $layerCount++; Write-Log "  [$layerCount] HAGS enabled (dGPU has dedicated VRAM)" Info
+    } else {
+        Write-Log "  [SKIP] HAGS - iGPU uses shared RAM (HAGS adds CPU overhead)" Warn
+    }
 
-    # LAYER 7: Disable MPO - biggest cause of borderless tearing/flicker
+    # LAYER 7: MPO disable - SAFE and IMPORTANT on all hardware
     Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'OverlayTestMode' 5
-    Write-Log "  [7/12] MPO disabled (fixes borderless tearing)" Info
+    $layerCount++; Write-Log "  [$layerCount] MPO disabled (fixes borderless flicker on ALL GPUs)" Info
 
-    # LAYER 8: FSO completely off - force true exclusive fullscreen
+    # LAYER 8: FSO completely off - SAFE on all hardware
     Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_FSEBehaviorMode' 2
     Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_HonorUserFSEBehaviorMode' 1
     Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_DXGIHonorFSEWindowsCompatible' 1
     Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_FSEBehavior' 2
     Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_EFSEFeatureFlags' 0
-    Write-Log "  [8/12] FSO fully disabled (true exclusive fullscreen)" Info
+    $layerCount++; Write-Log "  [$layerCount] FSO fully disabled (true exclusive fullscreen)" Info
 
-    # LAYER 9: Game DVR + Game Bar + Game Mode completely killed
+    # LAYER 9: Game DVR/Bar/Mode kill - SAFE and IMPORTANT on all hardware
     Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 0
     Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0
     Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'AllowAutoGameMode' 0
     Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled' 0
     Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled' 0
-    Write-Log "  [9/12] Game DVR + Game Bar + Game Mode killed" Info
+    $layerCount++; Write-Log "  [$layerCount] Game DVR + Game Bar + Game Mode killed" Info
 
     # LAYER 10: GPU vendor-specific low latency + frame cap
-    $gpuName = try { (Get-CimInstance Win32_VideoController | Select-Object -First 1).Name } catch { '' }
     $gpuBase = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000'
     if ($gpuName -match 'NVIDIA|GeForce') {
-        Set-Reg $gpuBase 'LowLatencyMode' 2
-        Set-Reg $gpuBase 'RMVsyncControl' 0
-        Set-Reg $gpuBase 'FrameRateLimiterV3' $capFPS
-        # Max pre-rendered frames = 1 via NVIDIA profile
-        Set-Reg $gpuBase 'MaxFrameAllowed' 1
-        Write-Log "  [10/12] NVIDIA: Ultra Low Latency, V-Sync OFF, Cap=$capFPS, PreRender=1" Info
-    }
-    if ($gpuName -match 'AMD|Radeon') {
-        Set-Reg "$gpuBase\UMD" 'AntiLag' 1
-        Set-Reg "$gpuBase\UMD" 'Wait for Vertical Refresh_DEF' '1' 'String'
-        Set-Reg "$gpuBase\UMD" 'FlipQueueSize' '1' 'String'
-        Set-Reg "$gpuBase\UMD" 'Main3D_FrameRateTarget_DEF' "$capFPS" 'String'
+        Set-Reg $gpuBase 'LowLatencyMode' 2; Set-Reg $gpuBase 'RMVsyncControl' 0
+        Set-Reg $gpuBase 'FrameRateLimiterV3' $capFPS; Set-Reg $gpuBase 'MaxFrameAllowed' 1
+        $layerCount++; Write-Log "  [$layerCount] NVIDIA: Ultra Low Latency ON, V-Sync OFF, Cap=$capFPS, PreRender=1" Info
+    } elseif ($gpuName -match 'AMD|Radeon' -and -not $isIGPU) {
+        Set-Reg "$gpuBase\UMD" 'AntiLag' 1; Set-Reg "$gpuBase\UMD" 'Wait for Vertical Refresh_DEF' '1' 'String'
+        Set-Reg "$gpuBase\UMD" 'FlipQueueSize' '1' 'String'; Set-Reg "$gpuBase\UMD" 'Main3D_FrameRateTarget_DEF' "$capFPS" 'String'
         Set-Reg "$gpuBase\UMD" 'MaxFrameAllowed' 1
-        Write-Log "  [10/12] AMD: Anti-Lag ON, FlipQueue=1, V-Sync OFF, FRTC=$capFPS" Info
-    }
-    if ($gpuName -match 'Intel|UHD|Iris|Arc') {
-        Set-Reg "$gpuBase\GMM" 'VSync' 0
-        Set-Reg $gpuBase 'VSync' 0
-        Write-Log "  [10/12] Intel: V-Sync OFF (MUST use RTSS for cap at $capFPS)" Info
+        $layerCount++; Write-Log "  [$layerCount] AMD dGPU: Anti-Lag ON, FlipQueue=1, FRTC=$capFPS" Info
+    } elseif ($gpuName -match 'Intel|UHD|Iris|Arc') {
+        Set-Reg "$gpuBase\GMM" 'VSync' 0; Set-Reg $gpuBase 'VSync' 0
+        $layerCount++; Write-Log "  [$layerCount] Intel iGPU: V-Sync OFF (USE RTSS for cap at $capFPS!)" Info
+    } elseif ($isIGPU) {
+        $layerCount++; Write-Log "  [$layerCount] AMD iGPU: V-Sync OFF (USE RTSS for cap at $capFPS!)" Info
     }
 
-    # LAYER 11: Disable present throttle - stops Windows from artificially limiting present calls
+    # LAYER 11: Present throttle disable - SAFE on all hardware
     Set-Reg 'HKCU:\Software\Microsoft\DirectX\GraphicsSettings' 'SwapEffectUpgradeCache' 0
-    Set-Reg 'HKLM:\SOFTWARE\Microsoft\DirectX' 'DisableShaderCache' 0
-    Write-Log "  [11/12] Present throttle disabled" Info
+    $layerCount++; Write-Log "  [$layerCount] Present throttle disabled" Info
 
-    # LAYER 12: Timer resolution for consistent frame delivery timing
-    bcdedit /set useplatformtick yes 2>$null
-    bcdedit /set disabledynamictick yes 2>$null
-    Write-Log "  [12/12] Timer resolution optimized for frame pacing" Info
+    # LAYER 12: BCD Timer - SKIP on laptops (causes clock desync on mobile Intel = anti-cheat kicks)
+    if (-not $isLaptop) {
+        bcdedit /set useplatformtick yes 2>$null; bcdedit /set disabledynamictick yes 2>$null
+        $layerCount++; Write-Log "  [$layerCount] BCD timer optimized (desktop only)" Info
+    } else {
+        Write-Log "  [SKIP] BCD timer tweaks - laptop detected (causes clock desync on mobile Intel)" Warn
+    }
 
-    # Download RTSS prompt (most reliable frame cap)
-    $msg = "ZERO-TEAR PRO: 12 LAYERS APPLIED`n`n"
-    $msg += "Monitor: ${hz}Hz | GPU: $gpuName`n"
-    $msg += "Target Cap: $capFPS FPS (3 below Hz = no overshoot)`n`n"
-    $msg += "=== ALL 12 LAYERS ==========================`n"
-    $msg += "  1. DWM frame buffer disabled`n"
-    $msg += "  2. DWM overlays disabled`n"
-    $msg += "  3. DWM V-Sync TSC disabled`n"
-    $msg += "  4. Pre-rendered frames = 1 (CRITICAL)`n"
-    $msg += "  5. Flip Model forced`n"
-    $msg += "  6. HAGS enabled`n"
-    $msg += "  7. MPO disabled`n"
-    $msg += "  8. FSO disabled (true exclusive fullscreen)`n"
-    $msg += "  9. Game DVR/Bar/Mode fully killed`n"
-    $msg += " 10. GPU Low Latency + driver frame cap`n"
-    $msg += " 11. Present throttle disabled`n"
-    $msg += " 12. Timer resolution optimized`n`n"
-    $msg += "=== YOU MUST DO THIS (the script CANNOT) ===`n`n"
-    $msg += "STEP 1: Download RTSS from guru3d.com/rtss`n"
-    $msg += "  -> Set Framerate limit to: $capFPS`n"
-    $msg += "  -> RTSS caps at the SCANLINE level = zero tear`n`n"
-    $msg += "OR use your GPU control panel:`n"
-    $msg += "  NVIDIA: 3D Settings > Max Frame Rate > $capFPS`n"
-    $msg += "  AMD: Adrenalin > Gaming > FRTC > $capFPS`n`n"
-    $msg += "STEP 2: In-game settings:`n"
-    $msg += "  -> Set FULLSCREEN (not borderless)`n"
-    $msg += "  -> V-Sync OFF`n"
-    $msg += "  -> Frame cap: $capFPS (if available)`n`n"
-    $msg += "WHY THIS WORKS:`n"
-    $msg += "Frame cap at $capFPS means GPU never renders`n"
-    $msg += "faster than your ${hz}Hz monitor can display.`n"
-    $msg += "Pre-rendered=1 means only 1 frame in queue.`n"
-    $msg += "Flip Model gives smooth frame hand-off.`n"
-    $msg += "Result: scanline-sync effect with 0ms input lag`n"
-    $msg += "(V-Sync adds 16-50ms lag = unusable for gaming)"
+    # Build report
+    $skipped = @()
+    if ($isIGPU) { $skipped += "DWM V-Sync TSC (double-sync on iGPU)"; $skipped += "Flip Model (Intel driver conflict)"; $skipped += "HAGS (shared VRAM overhead)" }
+    if ($isLaptop) { $skipped += "BCD timers (clock desync on mobile Intel)" }
 
-    $r = [System.Windows.MessageBox]::Show($msg, 'Zero-Tear Pro Complete - READ THIS', 'OK', 'Information')
-    Write-Log "ZERO-TEAR PRO: 12 layers active! Cap at $capFPS FPS via RTSS or GPU panel." OK; Play-Tone
+    $msg = "ZERO-TEAR PRO v2: $layerCount LAYERS APPLIED`n"
+    if ($skipped.Count -gt 0) { $msg += "(Skipped $($skipped.Count) incompatible layers for your hardware)`n" }
+    $msg += "`nMonitor: ${hz}Hz | GPU: $gpuName`n"
+    $msg += "iGPU Detected: $isIGPU | Laptop: $isLaptop`n"
+    $msg += "Target FPS Cap: $capFPS`n`n"
+    if ($skipped.Count -gt 0) { $msg += "SKIPPED (would hurt YOUR system):`n"; foreach ($s in $skipped) { $msg += "  [X] $s`n" }; $msg += "`n" }
+    $msg += "=== MANDATORY: YOU MUST SET A FRAME CAP ===`n`n"
+    if ($isIGPU) {
+        $msg += "Your iGPU cannot set frame cap via registry.`n"
+        $msg += "YOU MUST download RTSS from guru3d.com/rtss`n"
+        $msg += "Set framerate limit to: $capFPS`n`n"
+    } else {
+        $msg += "Option 1: RTSS (best) - guru3d.com/rtss -> Cap: $capFPS`n"
+        $msg += "Option 2: GPU Control Panel:`n"
+        $msg += "  NVIDIA: 3D Settings > Max Frame Rate > $capFPS`n"
+        $msg += "  AMD: Adrenalin > FRTC > $capFPS`n`n"
+    }
+    $msg += "In-game: FULLSCREEN mode, V-Sync OFF, cap $capFPS`n`n"
+    $msg += "WHY Hz-3: Cap at $capFPS means GPU never overshoots`n"
+    $msg += "your ${hz}Hz monitor. Pre-rendered=1 + frame cap =`n"
+    $msg += "scanline-sync effect with ZERO input lag penalty.`n"
+    $msg += "(V-Sync adds 16-50ms lag = unusable for competitive)"
+    [System.Windows.MessageBox]::Show($msg, 'Zero-Tear Pro v2 Complete', 'OK', 'Information') | Out-Null
+    Write-Log "ZERO-TEAR PRO v2: $layerCount layers active! Cap at $capFPS FPS!" OK; Play-Tone
 }
 
 # ============================================================
@@ -978,50 +991,58 @@ function Invoke-SmartPreset {
     Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardDelay' '0' 'String'
     $safe += '[Input] Keyboard max speed — zero repeat delay'
 
-    # =============== TIER 2: RAM-BASED (Depends on how much memory you have) ===============
+    # =============== TIER 2: RAM-BASED + iGPU AWARENESS ===============
+    # iGPU laptops (Intel UHD/Iris, AMD Vega) share system RAM as VRAM
+    # Disabling memory compression on these causes VRAM starvation and GPU crashes
+    $hasIGPU = $gpu -match 'Intel|UHD|Iris|Vega|AMD Radeon\(TM\) Graphics'
+    $iGPUGuard = $isLaptop -and $hasIGPU
+
     if ($ramGB -le 4) {
-        # 4GB: Ultra conservative - every byte matters
-        $skip += '[Memory] Memory compression kept ON — critical for 4GB (saves physical RAM)'
-        $skip += '[Service] SysMain kept running — helps 4GB systems preload apps from disk'
+        $skip += '[Memory] Compression kept ON — critical for 4GB (saves physical RAM)'
+        $skip += '[Service] SysMain kept ON — helps 4GB preload apps from disk'
         $warnings += 'Your 4GB RAM is very limited. Consider upgrading to 8GB+ for better gaming.'
     }
     elseif ($ramGB -le 8) {
-        # 8GB: Standard - keep compression, disable SysMain
-        $skip += '[Memory] Memory compression kept ON — helpful for 8GB (games use 6-8GB)'
+        $skip += '[Memory] Compression kept ON — helpful for 8GB (games use 6-8GB)'
         try{Set-Service -Name 'SysMain' -StartupType Disabled -EA Stop;Stop-Service -Name 'SysMain' -Force -EA Stop}catch{}
         $safe += '[Service] SysMain disabled — frees RAM and stops disk thrashing'
     }
     elseif ($ramGB -le 16) {
-        # 16GB: Can disable compression - plenty of headroom
-        try{Disable-MMAgent -MemoryCompression -EA Stop}catch{}
-        $safe += '[Memory] Compression OFF — 16GB has plenty of headroom'
+        if ($iGPUGuard) {
+            $skip += '[Memory] Compression kept ON — iGPU laptop shares RAM as VRAM (disabling causes GPU crashes)'
+            $warnings += 'Your Intel/AMD iGPU borrows system RAM. Memory compression kept ON to prevent VRAM starvation.'
+        } else {
+            try{Disable-MMAgent -MemoryCompression -EA Stop}catch{}
+            $safe += '[Memory] Compression OFF — 16GB + dedicated GPU has headroom'
+        }
         try{Set-Service -Name 'SysMain' -StartupType Disabled -EA Stop;Stop-Service -Name 'SysMain' -Force -EA Stop}catch{}
         $safe += '[Service] SysMain disabled — frees RAM for games'
         try{Set-Service -Name 'WSearch' -StartupType Manual -EA Stop}catch{}
         $safe += '[Service] WSearch set to Manual — reduces background disk I/O'
     }
     elseif ($ramGB -le 32) {
-        # 32GB: Aggressive - disable everything memory-related
-        try{Disable-MMAgent -MemoryCompression -EA Stop}catch{}
-        $safe += '[Memory] Compression OFF — 32GB has massive headroom'
+        if ($iGPUGuard) {
+            $skip += '[Memory] Compression kept ON — iGPU laptop shares RAM as VRAM even at 32GB'
+        } else {
+            try{Disable-MMAgent -MemoryCompression -EA Stop}catch{}
+            $safe += '[Memory] Compression OFF — 32GB has massive headroom'
+        }
         try{Set-Service -Name 'SysMain' -StartupType Disabled -EA Stop;Stop-Service -Name 'SysMain' -Force -EA Stop}catch{}
         $safe += '[Service] SysMain disabled — unnecessary with 32GB'
         try{Set-Service -Name 'WSearch' -StartupType Manual -EA Stop}catch{}
         $safe += '[Service] WSearch to Manual — saves CPU and disk writes'
-        Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'LargeSystemCache' 0
-        $safe += '[Memory] App memory prioritized over file cache'
     }
     else {
-        # 64GB+: Maximum - all memory optimizations
-        try{Disable-MMAgent -MemoryCompression -EA Stop}catch{}
-        $safe += '[Memory] Compression OFF — 64GB+ has extreme headroom'
+        if ($iGPUGuard) {
+            $skip += '[Memory] Compression kept ON — iGPU VRAM safety even at 64GB+'
+        } else {
+            try{Disable-MMAgent -MemoryCompression -EA Stop}catch{}
+            $safe += '[Memory] Compression OFF — 64GB+ has extreme headroom'
+        }
         try{Set-Service -Name 'SysMain' -StartupType Disabled -EA Stop;Stop-Service -Name 'SysMain' -Force -EA Stop}catch{}
         $safe += '[Service] SysMain disabled — completely unnecessary at 64GB'
         try{Set-Service -Name 'WSearch' -StartupType Manual -EA Stop}catch{}
         $safe += '[Service] WSearch to Manual — saves CPU cycles'
-        Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'LargeSystemCache' 0
-        $safe += '[Memory] App memory prioritized over file cache'
-        $safe += '[Memory] With 64GB+ you can safely run multiple games simultaneously'
     }
 
     # =============== TIER 3: DEVICE-SPECIFIC (Desktop vs Laptop) ===============
